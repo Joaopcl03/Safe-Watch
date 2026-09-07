@@ -1,0 +1,60 @@
+name: safe_watch
+description: "Safe Watch - Track your watched movies and TV shows"
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  
+  # State Management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+  
+  # Routing
+  go_router: ^14.8.1
+  
+  # HTTP Client
+  dio: ^5.7.0
+  
+  # Input Formatting
+  easy_mask: ^2.0.1
+  
+  # Local Database
+  # TODO: Adicionar Isar quando implementar persistência real:
+  #   isar: ^4.0.0-dev.14
+  #   isar_flutter_libs: ^4.0.0-dev.14
+  # Por enquanto o WatchedListRepository usa lista em memória (mock).
+  
+  # Serialization
+  json_annotation: ^4.9.0
+  
+  # Utilities
+  freezed_annotation: ^3.0.0
+  intl: ^0.20.2
+
+  # OAuth & Secure Storage
+  shared_preferences: ^2.3.2
+
+  # URL Launcher (OAuth browser flow)
+  url_launcher: ^6.3.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.14
+  riverpod_generator: ^2.6.3
+  json_serializable: ^6.9.4
+  freezed: ^3.0.3
+  # TODO: Adicionar quando implementar Isar:
+  #   isar_generator: ^4.0.0-dev.14
+  custom_lint: ^0.7.5
+  riverpod_lint: ^2.6.3
+
+flutter:
+  uses-material-design: true

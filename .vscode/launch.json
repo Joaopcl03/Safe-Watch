@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SafeWatch (sem API keys)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart"
+    },
+    {
+      "name": "SafeWatch (com API keys)",
+      "request": "launch",
+      "type": "dart",
+      "program": "lib/main.dart",
+      "args": [
+        "--dart-define=TMDB_API_KEY=COLE_SUA_TMDB_KEY_AQUI",
+        "--dart-define=TRAKT_CLIENT_ID=COLE_SEU_TRAKT_CLIENT_ID_AQUI",
+        "--dart-define=TRAKT_CLIENT_SECRET=COLE_SEU_TRAKT_CLIENT_SECRET_AQUI",
+        "--dart-define=TVDB_API_KEY=COLE_SUA_TVDB_KEY_AQUI",
+        "--dart-define=WATCHMODE_API_KEY=COLE_SUA_WATCHMODE_KEY_AQUI"
+      ]
+    }
+  ]
+}
