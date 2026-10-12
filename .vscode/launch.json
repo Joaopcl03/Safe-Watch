@@ -13,7 +13,7 @@
       "type": "dart",
       "program": "lib/main.dart",
       "args": [
-        "--dart-define=TMDB_API_KEY=COLE_SUA_TMDB_KEY_AQUI",
+        "--dart-define=TMDB_API_KEY=eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJkZmU5ZGU2ZGQwYWEzNTNiYTBlNmIxNzc4MDRmNmYzOSIsIm5iZiI6MTc4ODc0OTc0My4yMjEsInN1YiI6IjZhOWUyNTExMTBmYTA1NDVkZWM3NGMyMiIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.nu5M62l95FJ7KcErYu8HIDNURco1dM3RLaQW5q8kGIY",
         "--dart-define=TRAKT_CLIENT_ID=COLE_SEU_TRAKT_CLIENT_ID_AQUI",
         "--dart-define=TRAKT_CLIENT_SECRET=COLE_SEU_TRAKT_CLIENT_SECRET_AQUI",
         "--dart-define=TVDB_API_KEY=COLE_SUA_TVDB_KEY_AQUI",

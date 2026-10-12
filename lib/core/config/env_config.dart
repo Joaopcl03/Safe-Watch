@@ -3,86 +3,62 @@
 // ============================================================================
 // Gerenciamento seguro de API keys via --dart-define.
 //
-// Como usar durante o desenvolvimento:
+// Para rodar o app com as keys:
 //   flutter run \
-//     --dart-define=TMDB_API_KEY=seu_key \
-//     --dart-define=TRAKT_CLIENT_ID=seu_id \
-//     --dart-define=TRAKT_CLIENT_SECRET=seu_secret \
-//     --dart-define=TVDB_API_KEY=seu_key \
-//     --dart-define=WATCHMODE_API_KEY=seu_key
-//
-// Em produção, configure as variáveis no CI/CD ou via launch.json no VS Code:
-// {
-//   "configurations": [{
-//     "name": "SafeWatch Dev",
-//     "request": "launch",
-//     "type": "dart",
-//     "args": ["--dart-define=TMDB_API_KEY=xxx"]
-//   }]
-// }
+//     --dart-define=TMDB_API_KEY=sua_key \
+//     --dart-define=TRAKT_CLIENT_ID=sua_key \
+//     --dart-define=TRAKT_CLIENT_SECRET=sua_key \
+//     --dart-define=TVDB_API_KEY=sua_key \
+//     --dart-define=WATCHMODE_API_KEY=sua_key
 // ============================================================================
 
-/// Configuração de variáveis de ambiente para API keys.
+/// Configuração de ambiente do Safe Watch.
 ///
-/// Todas as keys são injetadas via `--dart-define` no build,
-/// nunca hardcoded no código-fonte ou commitadas no repositório.
+/// API keys são injetadas em tempo de compilação via `--dart-define`.
+/// Nunca commite keys diretamente no código.
 abstract final class EnvConfig {
-  // --------------------------------------------------------------------------
-  // TMDB — The Movie Database
-  // Obtenha em: https://www.themoviedb.org/settings/api (gratuito)
-  // --------------------------------------------------------------------------
+  /// TMDB API Read Access Token (Bearer).
+  /// Obter em: https://www.themoviedb.org/settings/api
+  static const String tmdbApiKey = String.fromEnvironment('TMDB_API_KEY');
 
-  /// API Key do TMDB (read access token).
-  static const tmdbApiKey = String.fromEnvironment('TMDB_API_KEY');
+  /// Trakt.tv Client ID (usada como trakt-api-key header).
+  /// Criar app em: https://trakt.tv/oauth/applications/new
+  static const String traktClientId = String.fromEnvironment('TRAKT_CLIENT_ID');
 
-  // --------------------------------------------------------------------------
-  // Trakt.tv
-  // Crie um app em: https://trakt.tv/oauth/applications/new (gratuito)
-  // --------------------------------------------------------------------------
-
-  /// Client ID do app Trakt.tv.
-  static const traktClientId = String.fromEnvironment('TRAKT_CLIENT_ID');
-
-  /// Client Secret do app Trakt.tv.
-  static const traktClientSecret =
+  /// Trakt.tv Client Secret (usada no OAuth token exchange).
+  static const String traktClientSecret =
       String.fromEnvironment('TRAKT_CLIENT_SECRET');
 
-  /// URI de redirecionamento OAuth registrado no app Trakt.tv.
-  /// Deve ser registrado exatamente como configurado no painel do Trakt.
-  static const traktRedirectUri =
-      String.fromEnvironment('TRAKT_REDIRECT_URI', defaultValue: 'safewatch://trakt/callback');
+  /// Trakt.tv OAuth Redirect URI.
+  static const String traktRedirectUri =
+      String.fromEnvironment('TRAKT_REDIRECT_URI', defaultValue: 'safewatch://auth/callback');
 
-  // --------------------------------------------------------------------------
-  // TheTVDB v4
-  // Crie uma key em: https://thetvdb.com/dashboard/account/apikeys
-  // Plano gratuito: 200 req/mês
-  // --------------------------------------------------------------------------
+  /// TheTVDB API Key.
+  /// Obter em: https://thetvdb.com/dashboard/account/apikeys
+  static const String tvdbApiKey = String.fromEnvironment('TVDB_API_KEY');
 
-  /// API Key do TheTVDB v4.
-  static const tvdbApiKey = String.fromEnvironment('TVDB_API_KEY');
+  /// TheTVDB Subscriber PIN (opcional, para planos pagos).
+  static const String tvdbPin = String.fromEnvironment('TVDB_PIN');
 
-  // --------------------------------------------------------------------------
-  // Watchmode
-  // Registre-se em: https://api.watchmode.com/ (plano gratuito: 1000 req/mês)
-  // --------------------------------------------------------------------------
+  /// Watchmode API Key.
+  /// Obter em: https://api.watchmode.com/
+  static const String watchmodeApiKey =
+      String.fromEnvironment('WATCHMODE_API_KEY');
 
-  /// API Key do Watchmode.
-  static const watchmodeApiKey = String.fromEnvironment('WATCHMODE_API_KEY');
-
-  // --------------------------------------------------------------------------
-  // Helpers
-  // --------------------------------------------------------------------------
-
-  /// Verifica se as keys essenciais (TMDB e Trakt) estão configuradas.
-  ///
-  /// Útil para exibir avisos durante o desenvolvimento quando as keys
-  /// não foram fornecidas via --dart-define.
-  static bool get hasRequiredKeys =>
+  /// Verifica se todas as keys obrigatórias estão configuradas.
+  static bool get isConfigured =>
       tmdbApiKey.isNotEmpty && traktClientId.isNotEmpty;
 
-  /// Verifica se a integração com TheTVDB está configurada.
-  static bool get hasTvdbKey => tvdbApiKey.isNotEmpty;
+  /// Verifica se TMDB está configurado.
+  static bool get isTmdbConfigured => tmdbApiKey.isNotEmpty;
 
-  /// Verifica se a integração com Watchmode está configurada.
-  static bool get hasWatchmodeKey => watchmodeApiKey.isNotEmpty;
+  /// Verifica se Trakt está configurado.
+  static bool get isTraktConfigured =>
+      traktClientId.isNotEmpty && traktClientSecret.isNotEmpty;
+
+  /// Verifica se TheTVDB está configurado.
+  static bool get isTvdbConfigured => tvdbApiKey.isNotEmpty;
+
+  /// Verifica se Watchmode está configurado.
+  static bool get isWatchmodeConfigured => watchmodeApiKey.isNotEmpty;
 }

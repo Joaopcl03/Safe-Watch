@@ -1,5 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:safe_watch/core/api/auth/trakt_auth_service.dart';
+import 'package:safe_watch/core/api/clients/trakt_client.dart';
+import 'package:safe_watch/core/config/env_config.dart';
 import 'package:safe_watch/features/auth/models/auth_state.dart';
 import 'package:safe_watch/features/auth/repositories/auth_repository.dart';
 import 'package:safe_watch/features/auth/repositories/auth_repository_interface.dart';
@@ -9,66 +11,61 @@ import 'package:safe_watch/features/auth/repositories/auth_repository_interface.
 // ============================================================================
 // Fluxo de dados:
 //   LoginTemplate (UI) → AuthController (lógica) → AuthRepository (dados) → AuthState (modelo)
+//                                                → TraktAuthService (OAuth)
 //
 // O controller NÃO contém lógica de UI.
-// Ele expõe estado via Notifier e orquestra chamadas ao repository.
+// Ele expõe estado via Notifier e orquestra chamadas ao repository + Trakt OAuth.
 // ============================================================================
 
 /// Provider do repositório de autenticação.
-///
-/// Pode ser sobrescrito em testes com `overrides` para injetar mocks.
 final authRepositoryProvider = Provider<AuthRepositoryInterface>((ref) {
   return AuthRepository();
 });
 
 /// Provider do serviço OAuth do Trakt.
-///
-/// Pode ser sobrescrito em testes para injetar mock.
-final traktAuthServiceProvider = Provider<TraktAuthService>((ref) {
-  return TraktAuthService.instance;
+final traktAuthServiceProvider = Provider<TraktAuthService?>((ref) {
+  if (!EnvConfig.isTraktConfigured) return null;
+  final traktClient = TraktClient();
+  return TraktAuthService(traktClient: traktClient);
 });
 
 /// Provider do controller de autenticação.
-///
-/// Expõe [AuthState] e métodos de autenticação para a UI.
 final authControllerProvider =
     NotifierProvider<AuthController, AuthState>(AuthController.new);
 
 /// Controller de autenticação usando Riverpod [Notifier].
 ///
-/// Responsável por:
-/// - Orquestrar chamadas ao [AuthRepositoryInterface] (login/registro local)
-/// - Gerenciar o fluxo OAuth 2.0 do Trakt.tv via [TraktAuthService]
-/// - Expor o [AuthState] para a UI via `ref.watch(authControllerProvider)`
-/// - NÃO contém lógica de UI
+/// Gerencia:
+/// - Login/registro local (mock)
+/// - Autenticação OAuth com Trakt.tv
+/// - Estado de autenticação do usuário
 ///
-/// Fluxo Trakt:
+/// Fluxo:
 /// ```
 /// LoginTemplate
+///   └─► ref.read(authControllerProvider.notifier).signIn(...)
+///         └─► AuthRepository.signInWithEmail(...)
+///               └─► retorna AuthState
+///         └─► state = authState
 ///   └─► ref.read(authControllerProvider.notifier).signInWithTrakt()
-///         └─► TraktAuthService.authorize()    → abre browser
-///         └─► TraktAuthService.handleCallback() → recebe code
-///         └─► state = AuthState.authenticated (com userId Trakt)
+///         └─► TraktAuthService.startAuthFlow()
+///               └─► Abre browser → OAuth → callback
+///         └─► TraktAuthService.handleAuthCallback(code)
+///               └─► TraktClient.exchangeCodeForToken(code)
+///   └─► ref.watch(authControllerProvider) → rebuida UI
 /// ```
 class AuthController extends Notifier<AuthState> {
   late final AuthRepositoryInterface _repository;
-  late final TraktAuthService _traktAuth;
+  TraktAuthService? _traktAuthService;
 
   @override
   AuthState build() {
     _repository = ref.watch(authRepositoryProvider);
-    _traktAuth = ref.watch(traktAuthServiceProvider);
+    _traktAuthService = ref.watch(traktAuthServiceProvider);
     return const AuthState.initial();
   }
 
-  // --------------------------------------------------------------------------
-  // Autenticação Local (email/senha)
-  // --------------------------------------------------------------------------
-
-  /// Realiza login com email e senha.
-  ///
-  /// Atualiza o estado para [AuthStatus.authenticating] durante o processo
-  /// e para [AuthStatus.authenticated] ou [AuthStatus.error] ao finalizar.
+  /// Realiza login com email e senha (mock).
   Future<void> signIn({
     required String email,
     required String password,
@@ -84,12 +81,12 @@ class AuthController extends Notifier<AuthState> {
     } catch (e) {
       state = AuthState(
         status: AuthStatus.error,
-        errorMessage: 'Erro ao fazer login: ${e.toString()}',
+        errorMessage: 'Erro ao fazer login: $e',
       );
     }
   }
 
-  /// Registra um novo usuário.
+  /// Registra um novo usuário (mock).
   Future<void> signUp({
     required String name,
     required String email,
@@ -107,48 +104,45 @@ class AuthController extends Notifier<AuthState> {
     } catch (e) {
       state = AuthState(
         status: AuthStatus.error,
-        errorMessage: 'Erro ao registrar: ${e.toString()}',
+        errorMessage: 'Erro ao registrar: $e',
       );
     }
   }
 
-  // --------------------------------------------------------------------------
-  // Autenticação Trakt.tv (OAuth 2.0)
-  // --------------------------------------------------------------------------
+  /// Inicia o fluxo OAuth do Trakt.tv.
+  ///
+  /// Abre o browser para o usuário autorizar o app.
+  /// Após autorização, chamar [handleTraktCallback] com o code.
+  Future<void> signInWithTrakt() async {
+    if (_traktAuthService == null) {
+      state = const AuthState(
+        status: AuthStatus.error,
+        errorMessage: 'Trakt não configurado. Defina TRAKT_CLIENT_ID e TRAKT_CLIENT_SECRET.',
+      );
+      return;
+    }
 
-  /// Inicia o fluxo OAuth 2.0 do Trakt.tv.
-  ///
-  /// Abre o browser do dispositivo na página de autorização do Trakt.
-  /// O fluxo é concluído quando o deep link `safewatch://trakt/callback`
-  /// é recebido pelo app e [handleTraktCallback] é chamado.
-  ///
-  /// Retorna a URL de autorização (útil para exibir em WebView se necessário).
-  Future<String?> signInWithTrakt() async {
     state = state.copyWith(status: AuthStatus.authenticating);
 
-    try {
-      final authUrl = await _traktAuth.authorize();
-      // Estado permanece como authenticating enquanto aguarda o callback.
-      // A UI pode usar esse estado para exibir um loader ou cancelar.
-      return authUrl;
-    } catch (e) {
-      state = AuthState(
+    final launched = await _traktAuthService!.startAuthFlow();
+    if (!launched) {
+      state = const AuthState(
         status: AuthStatus.error,
-        errorMessage: 'Erro ao iniciar autenticação Trakt: ${e.toString()}',
+        errorMessage: 'Não foi possível abrir o browser para autenticação.',
       );
-      return null;
     }
+    // O estado será atualizado em handleTraktCallback quando o user voltar.
   }
 
-  /// Processa o callback do OAuth do Trakt.
+  /// Processa o callback OAuth do Trakt.
   ///
-  /// Deve ser chamado quando o app receber o deep link
-  /// `safewatch://trakt/callback?code=XXX`.
-  ///
-  /// Extrai o code, troca por tokens e atualiza o estado de autenticação.
-  Future<void> handleTraktCallback(Uri callbackUri) async {
-    final success = await _traktAuth.handleCallback(callbackUri);
+  /// [code]: código de autorização recebido no redirect URI.
+  Future<void> handleTraktCallback(String code) async {
+    if (_traktAuthService == null) return;
 
+    state = state.copyWith(status: AuthStatus.authenticating);
+
+    final success = await _traktAuthService!.handleAuthCallback(code);
     if (success) {
       state = const AuthState(
         status: AuthStatus.authenticated,
@@ -158,18 +152,17 @@ class AuthController extends Notifier<AuthState> {
     } else {
       state = const AuthState(
         status: AuthStatus.error,
-        errorMessage: 'Autenticação com Trakt cancelada ou falhou.',
+        errorMessage: 'Falha na autenticação com o Trakt.',
       );
     }
   }
 
-  /// Verifica e restaura a sessão Trakt persistida.
-  ///
-  /// Deve ser chamado no startup do app para restaurar sessões anteriores.
+  /// Restaura sessão do Trakt (chamado no startup).
   Future<void> restoreTraktSession() async {
-    final isAuth = await _traktAuth.isAuthenticated;
+    if (_traktAuthService == null) return;
 
-    if (isAuth) {
+    final token = await _traktAuthService!.restoreSession();
+    if (token != null) {
       state = const AuthState(
         status: AuthStatus.authenticated,
         userId: 'trakt-user',
@@ -178,14 +171,12 @@ class AuthController extends Notifier<AuthState> {
     }
   }
 
-  // --------------------------------------------------------------------------
-  // Logout
-  // --------------------------------------------------------------------------
-
-  /// Realiza logout (local e Trakt).
+  /// Realiza logout.
   Future<void> signOut() async {
     await _repository.signOut();
-    await _traktAuth.signOut();
+    if (_traktAuthService != null) {
+      await _traktAuthService!.logout();
+    }
     state = const AuthState.initial();
   }
 }

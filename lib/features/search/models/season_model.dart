@@ -1,93 +1,83 @@
-import 'package:safe_watch/core/api/clients/tmdb_client.dart';
 import 'package:safe_watch/features/search/models/episode_model.dart';
 
 // ============================================================================
 // Safe Watch — Season Model
 // ============================================================================
-// Modelo de dados para temporadas de séries de TV.
-// Contém metadados da temporada e a lista de episódios.
+// Modelo de dados para temporadas de séries.
+// Fluxo: Template → Controller → Repository → TMDB API → SeasonModel
 // ============================================================================
 
-/// Modelo de dados para uma temporada de série de TV.
+/// Modelo de dados de uma temporada de série.
 ///
-/// Imutável por design — use [copyWith] para criar variantes.
+/// Contém metadados da temporada e lista de episódios.
 class SeasonModel {
   const SeasonModel({
     required this.id,
     required this.seasonNumber,
     required this.episodeCount,
     required this.name,
-    required this.overview,
-    required this.posterPath,
-    required this.airDate,
+    this.overview = '',
+    this.posterPath = '',
+    this.airDate = '',
     this.episodes = const [],
   });
 
-  /// Cria um [SeasonModel] a partir do JSON do TMDB.
+  /// Cria [SeasonModel] a partir do JSON do TMDB.
   ///
-  /// Compatível com o campo `seasons[]` de GET /tv/{id}
-  /// e com o endpoint GET /tv/{id}/season/{n}.
+  /// JSON da lista de temporadas em `/tv/{id}`:
+  /// ```json
+  /// {"id": 3572, "name": "Season 1", "season_number": 1, "episode_count": 7}
+  /// ```
   factory SeasonModel.fromTmdbJson(Map<String, dynamic> json) {
-    final episodesJson =
-        (json['episodes'] as List<dynamic>?) ?? [];
-
     return SeasonModel(
-      id: json['id'] as int? ?? 0,
-      seasonNumber: json['season_number'] as int? ?? 0,
-      episodeCount: json['episode_count'] as int? ?? episodesJson.length,
+      id: json['id'] as int,
+      seasonNumber: json['season_number'] as int,
+      episodeCount: json['episode_count'] as int? ?? 0,
       name: (json['name'] ?? '') as String,
       overview: (json['overview'] ?? '') as String,
       posterPath: (json['poster_path'] ?? '') as String,
       airDate: (json['air_date'] ?? '') as String,
-      episodes: episodesJson
-          .cast<Map<String, dynamic>>()
-          .map(EpisodeModel.fromTmdbJson)
-          .toList(),
+      episodes: (json['episodes'] as List<dynamic>?)
+              ?.map((e) => EpisodeModel.fromTmdbJson(e as Map<String, dynamic>))
+              .toList() ??
+          const [],
     );
   }
 
-  /// Cria um [SeasonModel] a partir do JSON do TheTVDB.
+  /// Cria [SeasonModel] a partir do JSON do TheTVDB.
   factory SeasonModel.fromTvdbJson(Map<String, dynamic> json) {
     return SeasonModel(
-      id: json['id'] as int? ?? 0,
+      id: json['id'] as int,
       seasonNumber: json['number'] as int? ?? 0,
-      episodeCount: 0, // TheTVDB retorna episódios separadamente.
-      name: (json['name'] ?? '') as String,
-      overview: (json['overview'] ?? '') as String,
+      episodeCount: 0, // TheTVDB não retorna count diretamente na lista
+      name: 'Season ${json['number'] ?? 0}',
       posterPath: (json['image'] ?? '') as String,
-      airDate: '',
     );
   }
 
-  /// ID único da temporada na API.
+  /// ID da temporada na API.
   final int id;
 
-  /// Número da temporada (0 = especiais/extras).
+  /// Número da temporada (0 = specials).
   final int seasonNumber;
 
-  /// Total de episódios na temporada.
+  /// Número total de episódios.
   final int episodeCount;
 
-  /// Título da temporada (ex: "Season 1", "Specials").
+  /// Nome da temporada (ex: "Season 1").
   final String name;
 
-  /// Sinopse/descrição da temporada.
+  /// Sinopse da temporada.
   final String overview;
 
   /// Caminho do poster da temporada.
-  /// URL completa: [TmdbClient.posterUrl(posterPath)]
   final String posterPath;
 
-  /// Data de estreia da temporada (formato ISO: "2024-01-01").
+  /// Data de estreia da temporada.
   final String airDate;
 
-  /// Lista de episódios desta temporada.
-  /// Preenchida quando os dados são carregados via [getSeasonDetails].
+  /// Lista de episódios (populada ao buscar detalhes da temporada).
   final List<EpisodeModel> episodes;
-
-  /// URL completa do poster na resolução w342.
-  String get fullPosterUrl =>
-      TmdbClient.posterUrl(posterPath, size: 'w342');
 
   /// Ano de estreia extraído de [airDate].
   String get airYear {
@@ -95,22 +85,7 @@ class SeasonModel {
     return airDate.substring(0, 4);
   }
 
-  /// Retorna true se a temporada é de especiais/extras (season 0).
-  bool get isSpecials => seasonNumber == 0;
-
-  /// Retorna true se a lista de episódios foi carregada.
-  bool get hasEpisodes => episodes.isNotEmpty;
-
-  /// Retorna o episódio pelo número, ou null se não encontrado.
-  EpisodeModel? episodeByNumber(int number) {
-    try {
-      return episodes.firstWhere((e) => e.episodeNumber == number);
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Cria uma cópia com valores alterados.
+  /// Cria cópia com valores alterados.
   SeasonModel copyWith({
     int? id,
     int? seasonNumber,
@@ -134,15 +109,5 @@ class SeasonModel {
   }
 
   @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is SeasonModel && other.id == id;
-  }
-
-  @override
-  int get hashCode => id.hashCode;
-
-  @override
-  String toString() =>
-      'SeasonModel(seasonNumber: $seasonNumber, episodeCount: $episodeCount, name: $name)';
+  String toString() => 'SeasonModel(id: $id, season: $seasonNumber, episodes: $episodeCount)';
 }

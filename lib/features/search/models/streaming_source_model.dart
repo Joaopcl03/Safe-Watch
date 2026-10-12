@@ -1,186 +1,118 @@
 // ============================================================================
 // Safe Watch — Streaming Source Model
 // ============================================================================
-// Modelo de dados para fontes de streaming de um título.
-// Representa um provider (Netflix, Prime, etc.) em uma região específica.
+// Modelo de dados para fontes de streaming (onde assistir).
+// Fluxo: Template → Controller → Repository → Watchmode API → StreamingSourceModel
 // ============================================================================
 
-/// Tipo de acesso ao conteúdo em uma plataforma de streaming.
+/// Tipo de disponibilidade em streaming.
 enum StreamingType {
-  /// Incluído na assinatura (ex: Netflix, Prime com assinatura).
+  /// Assinatura (SVOD) — Netflix, Max, Disney+, etc.
   subscription,
 
-  /// Acesso gratuito com anúncios (ex: Pluto TV, Tubi).
+  /// Gratuito com anúncios (AVOD) — Tubi, Pluto TV, etc.
   free,
 
-  /// Aluguel (ex: YouTube, Apple TV).
+  /// Aluguel (TVOD).
   rent,
 
-  /// Compra permanente (ex: Google Play, Apple TV).
+  /// Compra (EST).
   buy,
 
-  /// Tipo não reconhecido.
-  unknown,
+  /// TV Everywhere (requer login de TV a cabo).
+  tve,
 }
 
-/// Modelo de dados para uma fonte de streaming disponível.
+/// Modelo de dados de uma fonte de streaming.
 ///
-/// Pode ser construído a partir de dados do Watchmode ou do TMDB
-/// (JustWatch via `/watch/providers`).
+/// Representa onde um título pode ser assistido,
+/// com deep links para cada plataforma.
 class StreamingSourceModel {
   const StreamingSourceModel({
     required this.sourceId,
     required this.name,
     required this.type,
-    required this.region,
-    required this.webUrl,
-    this.androidUrl = '',
+    this.region = '',
+    this.webUrl = '',
     this.iosUrl = '',
-    this.logo = '',
+    this.androidUrl = '',
     this.format,
     this.price,
   });
 
-  /// Cria um [StreamingSourceModel] a partir do JSON do Watchmode.
+  /// Cria [StreamingSourceModel] a partir do JSON do Watchmode.
   ///
-  /// Estrutura esperada:
   /// ```json
   /// {
   ///   "source_id": 203, "name": "Netflix", "type": "sub",
-  ///   "region": "BR", "web_url": "https://...",
-  ///   "ios_url": "...", "android_url": "...",
-  ///   "format": "HD", "price": null
+  ///   "region": "US", "web_url": "https://...", "format": "4K"
   /// }
   /// ```
   factory StreamingSourceModel.fromWatchmodeJson(Map<String, dynamic> json) {
     return StreamingSourceModel(
-      sourceId: json['source_id'] as int? ?? 0,
+      sourceId: json['source_id'] as int,
       name: (json['name'] ?? '') as String,
-      type: _parseType(json['type'] as String?),
+      type: _parseStreamingType(json['type'] as String?),
       region: (json['region'] ?? '') as String,
       webUrl: (json['web_url'] ?? '') as String,
-      androidUrl: (json['android_url'] ?? '') as String,
       iosUrl: (json['ios_url'] ?? '') as String,
+      androidUrl: (json['android_url'] ?? '') as String,
       format: json['format'] as String?,
       price: (json['price'] as num?)?.toDouble(),
     );
   }
 
-  /// Cria um [StreamingSourceModel] a partir do JSON do TMDB (JustWatch).
-  ///
-  /// O TMDB retorna providers agrupados por tipo: flatrate, free, rent, buy.
-  /// [providerType] deve ser passado externamente (o tipo não está no objeto).
-  factory StreamingSourceModel.fromTmdbProviderJson(
-    Map<String, dynamic> json, {
-    required StreamingType providerType,
-    required String region,
-  }) {
-    return StreamingSourceModel(
-      sourceId: json['provider_id'] as int? ?? 0,
-      name: (json['provider_name'] ?? '') as String,
-      type: providerType,
-      region: region,
-      webUrl: '',
-      logo: (json['logo_path'] ?? '') as String,
-    );
-  }
-
-  /// ID único da fonte no Watchmode ou TMDB.
+  /// ID da fonte no Watchmode.
   final int sourceId;
 
-  /// Nome do serviço de streaming (ex: "Netflix", "Amazon Prime Video").
+  /// Nome do serviço (ex: "Netflix", "Apple TV").
   final String name;
 
-  /// Tipo de acesso (assinatura, gratuito, aluguel, compra).
+  /// Tipo de disponibilidade.
   final StreamingType type;
 
-  /// Código da região (ex: "BR", "US").
+  /// Código do país/região (ex: "BR", "US").
   final String region;
 
-  /// URL web para acessar o título neste serviço.
+  /// URL para assistir no navegador.
   final String webUrl;
 
-  /// URL deep link para Android.
-  final String androidUrl;
-
-  /// URL deep link para iOS.
+  /// Deep link para app iOS.
   final String iosUrl;
 
-  /// Caminho do logo do provider (URL parcial ou completa).
-  final String logo;
+  /// Deep link para app Android.
+  final String androidUrl;
 
-  /// Formato disponível (ex: "HD", "4K"). Pode ser null.
+  /// Formato disponível (ex: "HD", "4K").
   final String? format;
 
-  /// Preço para aluguel ou compra. Null para assinatura/gratuito.
+  /// Preço (para rent/buy). Null para subscription/free.
   final double? price;
 
-  /// Retorna true se o conteúdo está incluído em assinatura.
-  bool get isSubscription => type == StreamingType.subscription;
+  /// Se é gratuito (assinatura ou free com ads).
+  bool get isFree => type == StreamingType.subscription || type == StreamingType.free;
 
-  /// Retorna true se o conteúdo é gratuito.
-  bool get isFree => type == StreamingType.free;
+  /// Label formatado do tipo de streaming.
+  String get typeLabel => switch (type) {
+        StreamingType.subscription => 'Assinatura',
+        StreamingType.free => 'Grátis',
+        StreamingType.rent => 'Aluguel',
+        StreamingType.buy => 'Compra',
+        StreamingType.tve => 'TV',
+      };
 
-  /// Retorna true se é necessário pagar (aluguel ou compra).
-  bool get isPaid =>
-      type == StreamingType.rent || type == StreamingType.buy;
-
-  /// URL do logo completa (se for do TMDB, gera a URL completa).
-  String get fullLogoUrl {
-    if (logo.isEmpty) return '';
-    if (logo.startsWith('http')) return logo;
-    return 'https://image.tmdb.org/t/p/w92$logo';
-  }
-
-  /// Texto do tipo de acesso em português.
-  String get typeLabel {
-    switch (type) {
-      case StreamingType.subscription:
-        return 'Assinatura';
-      case StreamingType.free:
-        return 'Gratuito';
-      case StreamingType.rent:
-        return price != null
-            ? 'Aluguel — R\$ ${price!.toStringAsFixed(2)}'
-            : 'Aluguel';
-      case StreamingType.buy:
-        return price != null
-            ? 'Compra — R\$ ${price!.toStringAsFixed(2)}'
-            : 'Compra';
-      case StreamingType.unknown:
-        return 'Disponível';
-    }
-  }
-
-  static StreamingType _parseType(String? type) {
-    switch (type) {
-      case 'sub':
-      case 'subscription':
-        return StreamingType.subscription;
-      case 'free':
-        return StreamingType.free;
-      case 'rent':
-        return StreamingType.rent;
-      case 'buy':
-        return StreamingType.buy;
-      default:
-        return StreamingType.unknown;
-    }
+  /// Converte string da API para [StreamingType].
+  static StreamingType _parseStreamingType(String? type) {
+    return switch (type) {
+      'sub' => StreamingType.subscription,
+      'free' => StreamingType.free,
+      'rent' => StreamingType.rent,
+      'buy' => StreamingType.buy,
+      'tve' => StreamingType.tve,
+      _ => StreamingType.subscription,
+    };
   }
 
   @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is StreamingSourceModel &&
-        other.sourceId == sourceId &&
-        other.region == region &&
-        other.type == type;
-  }
-
-  @override
-  int get hashCode => sourceId.hashCode ^ region.hashCode ^ type.hashCode;
-
-  @override
-  String toString() =>
-      'StreamingSourceModel(name: $name, type: $type, region: $region)';
+  String toString() => 'StreamingSource(name: $name, type: $typeLabel, region: $region)';
 }

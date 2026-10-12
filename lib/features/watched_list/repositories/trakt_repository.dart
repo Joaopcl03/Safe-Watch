@@ -1,58 +1,59 @@
-import 'package:safe_watch/core/api/auth/trakt_auth_service.dart';
 import 'package:safe_watch/core/api/clients/trakt_client.dart';
-import 'package:safe_watch/features/search/models/episode_model.dart';
 import 'package:safe_watch/features/search/models/media_model.dart';
-import 'package:safe_watch/features/search/models/trakt_ids_model.dart';
 import 'package:safe_watch/features/watched_list/models/watched_item_model.dart';
 import 'package:safe_watch/features/watched_list/repositories/trakt_repository_interface.dart';
 
 // ============================================================================
 // Safe Watch — Trakt Repository
 // ============================================================================
-// Implementação real do TraktRepositoryInterface usando TraktClient.
+// Implementação do repositório de sync com Trakt.tv.
+// Usa TraktClient para comunicação com a API.
 //
-// Verifica autenticação antes de cada operação — se não autenticado,
-// as operações são no-ops silenciosos (a UI deve tratar o estado de auth).
+// Fluxo de dados:
+//   WatchedListController → TraktRepository → TraktClient → Trakt API
+//
+// IDs cruzados: usa TMDB IDs para identificar mídia no Trakt,
+// eliminando a necessidade de lookup prévio.
 // ============================================================================
 
-/// Implementação real do repositório Trakt.tv.
+/// Implementação do [TraktRepositoryInterface] usando [TraktClient].
 ///
-/// Coordena [TraktClient] para operações de sync e [TraktAuthService]
-/// para verificação de autenticação.
+/// Sincroniza histórico e watchlist do usuário com o Trakt.tv.
+/// Usa TMDB IDs para cross-reference (Trakt aceita IDs de múltiplas fontes).
 class TraktRepository implements TraktRepositoryInterface {
-  TraktRepository({
-    TraktClient? traktClient,
-    TraktAuthService? authService,
-  })  : _client = traktClient ?? TraktClient.instance,
-        _auth = authService ?? TraktAuthService.instance;
+  TraktRepository({required TraktClient traktClient})
+      : _traktClient = traktClient;
 
-  final TraktClient _client;
-  final TraktAuthService _auth;
-
-  @override
-  Future<bool> get isAuthenticated => _auth.isAuthenticated;
-
-  // --------------------------------------------------------------------------
-  // Histórico
-  // --------------------------------------------------------------------------
+  final TraktClient _traktClient;
 
   @override
   Future<void> syncToHistory(List<WatchedItemModel> items) async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
+    if (items.isEmpty) return;
 
-    final episodes = <Map<String, dynamic>>[];
+    // Agrupa por tipo (show vs movie) para o payload do Trakt.
+    final shows = <Map<String, dynamic>>[];
     final movies = <Map<String, dynamic>>[];
 
     for (final item in items) {
-      final watchedAt = (item.watchedAt ?? DateTime.now())
-          .toUtc()
-          .toIso8601String();
+      final watchedAt = item.watchedAt?.toUtc().toIso8601String() ??
+          DateTime.now().toUtc().toIso8601String();
 
       if (item.mediaType == MediaType.tv) {
-        episodes.add({
+        shows.add({
           'ids': {'tmdb': item.mediaId},
-          'watched_at': watchedAt,
+          'seasons': [
+            if (item.seasonProgress > 0)
+              {
+                'number': item.seasonProgress,
+                'episodes': [
+                  if (item.episodeProgress > 0)
+                    {
+                      'number': item.episodeProgress,
+                      'watched_at': watchedAt,
+                    },
+                ],
+              },
+          ],
         });
       } else {
         movies.add({
@@ -62,234 +63,136 @@ class TraktRepository implements TraktRepositoryInterface {
       }
     }
 
-    final body = <String, dynamic>{};
-    if (episodes.isNotEmpty) body['episodes'] = episodes;
-    if (movies.isNotEmpty) body['movies'] = movies;
-
-    if (body.isEmpty) return;
-    await _client.addToHistory(body);
-  }
-
-  @override
-  Future<void> removeFromHistory(List<WatchedItemModel> items) async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
-
-    final episodes = <Map<String, dynamic>>[];
-    final movies = <Map<String, dynamic>>[];
-
-    for (final item in items) {
-      if (item.mediaType == MediaType.tv) {
-        episodes.add({'ids': {'tmdb': item.mediaId}});
-      } else {
-        movies.add({'ids': {'tmdb': item.mediaId}});
-      }
-    }
-
-    final body = <String, dynamic>{};
-    if (episodes.isNotEmpty) body['episodes'] = episodes;
-    if (movies.isNotEmpty) body['movies'] = movies;
-
-    if (body.isEmpty) return;
-    await _client.removeFromHistory(body);
-  }
-
-  @override
-  Future<List<WatchedItemModel>> getWatchHistory({
-    int page = 1,
-    int limit = 20,
-  }) async {
-    if (!await isAuthenticated) return [];
-    await _auth.getValidAccessToken();
-
-    final history = await _client.getHistory(
-      type: 'movies',
-      page: page,
-      limit: limit,
-    );
-
-    return history
-        .cast<Map<String, dynamic>>()
-        .map(_watchedItemFromTraktHistory)
-        .whereType<WatchedItemModel>()
-        .toList();
-  }
-
-  // --------------------------------------------------------------------------
-  // Watchlist
-  // --------------------------------------------------------------------------
-
-  @override
-  Future<void> addToWatchlist(List<MediaModel> media) async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
-
-    final shows = <Map<String, dynamic>>[];
-    final movies = <Map<String, dynamic>>[];
-
-    for (final m in media) {
-      final entry = {'ids': {'tmdb': m.id}};
-      if (m.isTvShow) {
-        shows.add(entry);
-      } else {
-        movies.add(entry);
-      }
-    }
-
-    final body = <String, dynamic>{};
-    if (shows.isNotEmpty) body['shows'] = shows;
-    if (movies.isNotEmpty) body['movies'] = movies;
-
-    if (body.isEmpty) return;
-    await _client.addToWatchlist(body);
-  }
-
-  @override
-  Future<void> removeFromWatchlist(List<MediaModel> media) async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
-
-    final shows = <Map<String, dynamic>>[];
-    final movies = <Map<String, dynamic>>[];
-
-    for (final m in media) {
-      final entry = {'ids': {'tmdb': m.id}};
-      if (m.isTvShow) {
-        shows.add(entry);
-      } else {
-        movies.add(entry);
-      }
-    }
-
-    final body = <String, dynamic>{};
-    if (shows.isNotEmpty) body['shows'] = shows;
-    if (movies.isNotEmpty) body['movies'] = movies;
-
-    if (body.isEmpty) return;
-    await _client.removeFromWatchlist(body);
-  }
-
-  @override
-  Future<List<MediaModel>> getWatchlist() async {
-    if (!await isAuthenticated) return [];
-    await _auth.getValidAccessToken();
-
-    final watchlist = await _client.getWatchlist(type: 'shows');
-
-    return watchlist
-        .cast<Map<String, dynamic>>()
-        .map(_mediaFromTraktWatchlist)
-        .whereType<MediaModel>()
-        .toList();
-  }
-
-  // --------------------------------------------------------------------------
-  // Check-in
-  // --------------------------------------------------------------------------
-
-  @override
-  Future<void> checkin(EpisodeModel episode, MediaModel show) async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
-
-    final traktId = show.ids?.trakt;
-    final slug = show.ids?.slug;
-
-    await _client.checkin({
-      'episode': {
-        'season': episode.seasonNumber,
-        'number': episode.episodeNumber,
-      },
-      'show': {
-        'ids': {
-          if (traktId != null) 'trakt': traktId,
-          if (slug != null) 'slug': slug,
-          'tmdb': show.id,
-        },
-      },
+    await _traktClient.syncHistory({
+      if (shows.isNotEmpty) 'shows': shows,
+      if (movies.isNotEmpty) 'movies': movies,
     });
   }
 
   @override
-  Future<void> cancelCheckin() async {
-    if (!await isAuthenticated) return;
-    await _auth.getValidAccessToken();
-    await _client.cancelCheckin();
-  }
+  Future<void> removeFromHistory(List<WatchedItemModel> items) async {
+    if (items.isEmpty) return;
 
-  // --------------------------------------------------------------------------
-  // Progresso
-  // --------------------------------------------------------------------------
+    final shows = <Map<String, dynamic>>[];
+    final movies = <Map<String, dynamic>>[];
+
+    for (final item in items) {
+      final entry = {
+        'ids': {'tmdb': item.mediaId},
+      };
+      if (item.mediaType == MediaType.tv) {
+        shows.add(entry);
+      } else {
+        movies.add(entry);
+      }
+    }
+
+    await _traktClient.removeFromHistory({
+      if (shows.isNotEmpty) 'shows': shows,
+      if (movies.isNotEmpty) 'movies': movies,
+    });
+  }
 
   @override
-  Future<Map<String, dynamic>> getShowProgress(String traktId) async {
-    if (!await isAuthenticated) return {};
-    await _auth.getValidAccessToken();
-    return _client.getShowProgress(traktId);
+  Future<List<Map<String, dynamic>>> getWatchHistory({
+    int page = 1,
+    int limit = 20,
+  }) async {
+    final response = await _traktClient.getHistory(
+      page: page,
+      limit: limit,
+    );
+    return response.cast<Map<String, dynamic>>();
   }
 
-  // --------------------------------------------------------------------------
-  // Helpers de conversão
-  // --------------------------------------------------------------------------
+  @override
+  Future<void> addToWatchlist(List<MediaModel> media) async {
+    if (media.isEmpty) return;
 
-  WatchedItemModel? _watchedItemFromTraktHistory(Map<String, dynamic> json) {
-    try {
-      final type = json['type'] as String?;
-      final isMovie = type == 'movie';
-      final mediaJson = (isMovie ? json['movie'] : json['episode'])
-          as Map<String, dynamic>?;
-      if (mediaJson == null) return null;
+    final shows = <Map<String, dynamic>>[];
+    final movies = <Map<String, dynamic>>[];
 
-      final ids = mediaJson['ids'] as Map<String, dynamic>? ?? {};
-      final tmdbId = ids['tmdb'] as int?;
-      if (tmdbId == null) return null;
-
-      final watchedAt = json['watched_at'] as String?;
-      final title = (mediaJson['title'] ?? '') as String;
-
-      return WatchedItemModel(
-        id: 'trakt-${isMovie ? 'movie' : 'episode'}-$tmdbId',
-        mediaId: tmdbId,
-        title: title,
-        posterPath: '',
-        mediaType: isMovie ? MediaType.movie : MediaType.tv,
-        status: WatchedStatus.watched,
-        watchedAt: watchedAt != null ? DateTime.tryParse(watchedAt) : null,
-      );
-    } catch (_) {
-      return null;
+    for (final item in media) {
+      final entry = {
+        'title': item.title,
+        'ids': {'tmdb': item.id},
+      };
+      if (item.mediaType == MediaType.tv) {
+        shows.add(entry);
+      } else {
+        movies.add(entry);
+      }
     }
+
+    await _traktClient.addToWatchlist({
+      if (shows.isNotEmpty) 'shows': shows,
+      if (movies.isNotEmpty) 'movies': movies,
+    });
   }
 
-  MediaModel? _mediaFromTraktWatchlist(Map<String, dynamic> json) {
-    try {
-      final type = json['type'] as String?;
-      final isMovie = type == 'movie';
-      final mediaJson = (isMovie ? json['movie'] : json['show'])
-          as Map<String, dynamic>?;
-      if (mediaJson == null) return null;
+  @override
+  Future<void> removeFromWatchlist(List<MediaModel> media) async {
+    if (media.isEmpty) return;
 
-      final ids = mediaJson['ids'] as Map<String, dynamic>? ?? {};
-      final tmdbId = ids['tmdb'] as int?;
-      if (tmdbId == null) return null;
+    final shows = <Map<String, dynamic>>[];
+    final movies = <Map<String, dynamic>>[];
 
-      final traktIds = TraktIds.fromTraktJson(ids);
-      final title = (mediaJson['title'] ?? '') as String;
-      final overview = (mediaJson['overview'] ?? '') as String;
-      final year = mediaJson['year'] as int?;
-
-      return MediaModel(
-        id: tmdbId,
-        title: title,
-        overview: overview,
-        posterPath: '',
-        releaseDate: year != null ? '$year-01-01' : '',
-        mediaType: isMovie ? MediaType.movie : MediaType.tv,
-        voteAverage: (mediaJson['rating'] as num?)?.toDouble() ?? 0.0,
-        ids: traktIds,
-      );
-    } catch (_) {
-      return null;
+    for (final item in media) {
+      final entry = {
+        'ids': {'tmdb': item.id},
+      };
+      if (item.mediaType == MediaType.tv) {
+        shows.add(entry);
+      } else {
+        movies.add(entry);
+      }
     }
+
+    await _traktClient.removeFromWatchlist({
+      if (shows.isNotEmpty) 'shows': shows,
+      if (movies.isNotEmpty) 'movies': movies,
+    });
+  }
+
+  @override
+  Future<void> checkin({
+    required int tmdbId,
+    required MediaType mediaType,
+    int? seasonNumber,
+    int? episodeNumber,
+  }) async {
+    final data = <String, dynamic>{};
+
+    if (mediaType == MediaType.tv && seasonNumber != null && episodeNumber != null) {
+      data['show'] = {
+        'ids': {'tmdb': tmdbId},
+      };
+      data['episode'] = {
+        'season': seasonNumber,
+        'number': episodeNumber,
+      };
+    } else {
+      data['movie'] = {
+        'ids': {'tmdb': tmdbId},
+      };
+    }
+
+    await _traktClient.checkin(data);
+  }
+
+  @override
+  Future<void> cancelCheckin() async {
+    await _traktClient.cancelCheckin();
+  }
+
+  @override
+  Future<Map<String, dynamic>> getShowProgress(String showId) async {
+    return _traktClient.getShowProgress(showId);
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getWatchlist() async {
+    final response = await _traktClient.getWatchlist();
+    return response.cast<Map<String, dynamic>>();
   }
 }

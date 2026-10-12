@@ -1,51 +1,55 @@
-import 'package:safe_watch/core/api/clients/tmdb_client.dart';
-
 // ============================================================================
 // Safe Watch — Episode Model
 // ============================================================================
-// Modelo de dados para episódios de séries de TV.
-// Fluxo: SearchRepository → SeasonModel → EpisodeModel
+// Modelo de dados para episódios individuais.
+// Fluxo: Template → Controller → Repository → TMDB API → EpisodeModel
 // ============================================================================
 
-/// Modelo de dados para um episódio de série de TV.
+/// Modelo de dados de um episódio.
 ///
-/// Imutável por design — use [copyWith] para criar variantes.
+/// Contém metadados do episódio como título, sinopse, duração e nota.
 class EpisodeModel {
   const EpisodeModel({
     required this.id,
     required this.episodeNumber,
     required this.seasonNumber,
     required this.name,
-    required this.overview,
-    required this.stillPath,
-    required this.airDate,
-    required this.runtime,
-    required this.voteAverage,
+    this.overview = '',
+    this.stillPath = '',
+    this.airDate = '',
+    this.runtime = 0,
+    this.voteAverage = 0.0,
+    this.voteCount = 0,
   });
 
-  /// Cria um [EpisodeModel] a partir do JSON do TMDB.
+  /// Cria [EpisodeModel] a partir do JSON do TMDB.
   ///
-  /// Compatível com os endpoints:
-  /// - GET /tv/{id}/season/{n} (campo `episodes[]`)
-  /// - GET /tv/{id}/season/{n}/episode/{n}
+  /// JSON do endpoint `/tv/{id}/season/{num}`:
+  /// ```json
+  /// {
+  ///   "id": 62085, "episode_number": 1, "season_number": 1,
+  ///   "name": "Pilot", "runtime": 58, "still_path": "/ydlY3i..."
+  /// }
+  /// ```
   factory EpisodeModel.fromTmdbJson(Map<String, dynamic> json) {
     return EpisodeModel(
-      id: json['id'] as int? ?? 0,
-      episodeNumber: json['episode_number'] as int? ?? 0,
-      seasonNumber: json['season_number'] as int? ?? 0,
+      id: json['id'] as int,
+      episodeNumber: json['episode_number'] as int,
+      seasonNumber: json['season_number'] as int,
       name: (json['name'] ?? '') as String,
       overview: (json['overview'] ?? '') as String,
       stillPath: (json['still_path'] ?? '') as String,
       airDate: (json['air_date'] ?? '') as String,
       runtime: json['runtime'] as int? ?? 0,
       voteAverage: (json['vote_average'] as num?)?.toDouble() ?? 0.0,
+      voteCount: json['vote_count'] as int? ?? 0,
     );
   }
 
-  /// Cria um [EpisodeModel] a partir do JSON do TheTVDB.
+  /// Cria [EpisodeModel] a partir do JSON do TheTVDB.
   factory EpisodeModel.fromTvdbJson(Map<String, dynamic> json) {
     return EpisodeModel(
-      id: json['id'] as int? ?? 0,
+      id: json['id'] as int,
       episodeNumber: json['number'] as int? ?? 0,
       seasonNumber: json['seasonNumber'] as int? ?? 0,
       name: (json['name'] ?? '') as String,
@@ -53,17 +57,16 @@ class EpisodeModel {
       stillPath: (json['image'] ?? '') as String,
       airDate: (json['aired'] ?? '') as String,
       runtime: json['runtime'] as int? ?? 0,
-      voteAverage: 0.0, // TheTVDB não retorna rating por episódio.
     );
   }
 
-  /// ID único do episódio na API.
+  /// ID do episódio na API.
   final int id;
 
-  /// Número do episódio dentro da temporada (começa em 1).
+  /// Número do episódio na temporada.
   final int episodeNumber;
 
-  /// Número da temporada a que pertence.
+  /// Número da temporada.
   final int seasonNumber;
 
   /// Título do episódio.
@@ -72,86 +75,28 @@ class EpisodeModel {
   /// Sinopse do episódio.
   final String overview;
 
-  /// Caminho do still (frame de capa do episódio).
-  /// URL completa: [TmdbClient.stillUrl(stillPath)]
+  /// Caminho da imagem still do episódio.
   final String stillPath;
 
-  /// Data de exibição original (formato ISO: "2024-01-01").
+  /// Data de exibição do episódio.
   final String airDate;
 
   /// Duração em minutos.
   final int runtime;
 
-  /// Nota média dos usuários (0.0 a 10.0).
+  /// Nota média dos usuários.
   final double voteAverage;
 
-  /// URL completa do still na resolução w300.
-  String get fullStillUrl => TmdbClient.stillUrl(stillPath);
+  /// Número de votos.
+  final int voteCount;
 
-  /// Ano de exibição extraído de [airDate].
-  String get airYear {
-    if (airDate.isEmpty || airDate.length < 4) return '';
-    return airDate.substring(0, 4);
-  }
+  /// Código formatado do episódio (ex: "S01E05").
+  String get episodeCode =>
+      'S${seasonNumber.toString().padLeft(2, '0')}E${episodeNumber.toString().padLeft(2, '0')}';
 
-  /// Identificador de exibição do episódio (ex: "S01E03").
-  String get code =>
-      'S${seasonNumber.toString().padLeft(2, '0')}'
-      'E${episodeNumber.toString().padLeft(2, '0')}';
-
-  /// Texto de duração formatado (ex: "45 min").
-  String get runtimeText => runtime > 0 ? '$runtime min' : '';
-
-  /// Converte para o formato de body esperado pelo Trakt /sync/history.
-  Map<String, dynamic> toTraktHistoryBody({
-    DateTime? watchedAt,
-    int? traktId,
-  }) {
-    return {
-      'episodes': [
-        {
-          if (traktId != null) 'ids': {'trakt': traktId},
-          'watched_at': (watchedAt ?? DateTime.now()).toUtc().toIso8601String(),
-        },
-      ],
-    };
-  }
-
-  /// Cria uma cópia com valores alterados.
-  EpisodeModel copyWith({
-    int? id,
-    int? episodeNumber,
-    int? seasonNumber,
-    String? name,
-    String? overview,
-    String? stillPath,
-    String? airDate,
-    int? runtime,
-    double? voteAverage,
-  }) {
-    return EpisodeModel(
-      id: id ?? this.id,
-      episodeNumber: episodeNumber ?? this.episodeNumber,
-      seasonNumber: seasonNumber ?? this.seasonNumber,
-      name: name ?? this.name,
-      overview: overview ?? this.overview,
-      stillPath: stillPath ?? this.stillPath,
-      airDate: airDate ?? this.airDate,
-      runtime: runtime ?? this.runtime,
-      voteAverage: voteAverage ?? this.voteAverage,
-    );
-  }
+  /// Duração formatada (ex: "58 min").
+  String get runtimeFormatted => runtime > 0 ? '$runtime min' : '';
 
   @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is EpisodeModel && other.id == id;
-  }
-
-  @override
-  int get hashCode => id.hashCode;
-
-  @override
-  String toString() =>
-      'EpisodeModel($code, name: $name, id: $id)';
+  String toString() => 'EpisodeModel(id: $id, $episodeCode: $name)';
 }

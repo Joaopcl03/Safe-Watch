@@ -27,13 +27,27 @@ abstract final class SwNeutralColors {
 /// Cores da marca Safe Watch.
 /// Usadas para elementos de destaque, CTAs e identidade visual.
 abstract final class SwBrandColors {
-  static const Color primary = Color(0xFF6C5CE7);
-  static const Color primaryLight = Color(0xFFA29BFE);
-  static const Color primaryDark = Color(0xFF4834D4);
+  static const Color primary = Color(0xFFFFD000);
+  static const Color primaryLight = Color(0xFFFFE15C);
+  static const Color primaryDark = Color(0xFFC9A400);
   static const Color secondary = Color(0xFF00CEC9);
   static const Color secondaryLight = Color(0xFF81ECEC);
   static const Color secondaryDark = Color(0xFF00B894);
   static const Color accent = Color(0xFFFD79A8);
+}
+
+/// Cores de superfície do tema escuro (visual estilo "TV Time").
+/// Fundo preto, cards levemente elevados e painéis com tom quente.
+abstract final class SwSurfaceColors {
+  static const Color background = Color(0xFF000000);
+  static const Color surface = Color(0xFF0E0E0E);
+  static const Color card = Color(0xFF1A1A1A);
+  static const Color cardBorder = Color(0xFF3A3A3A);
+  static const Color divider = Color(0xFF2A2A2A);
+  static const Color pill = Color(0xFF5C5C5C);
+  static const Color chip = Color(0xFF262626);
+  static const Color feedPanel = Color(0xFF2A2417);
+  static const Color progressTrack = Color(0xFF3A3A3A);
 }
 
 /// Cores de suporte para feedback do sistema.
@@ -161,52 +175,75 @@ abstract final class SwTheme {
     );
   }
 
-  /// Tema escuro.
+  /// Tema escuro (visual principal do app, inspirado no TV Time).
   static ThemeData get darkTheme {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
-      colorScheme: ColorScheme.dark(
-        primary: SwBrandColors.primaryLight,
+      colorScheme: const ColorScheme.dark(
+        primary: SwBrandColors.primary,
         primaryContainer: SwBrandColors.primaryDark,
-        secondary: SwBrandColors.secondaryLight,
-        secondaryContainer: SwBrandColors.secondaryDark,
-        surface: SwNeutralColors.gray900,
+        secondary: SwBrandColors.primary,
+        secondaryContainer: SwBrandColors.primaryDark,
+        surface: SwSurfaceColors.surface,
+        surfaceContainerHighest: SwSurfaceColors.card,
         error: SwSupportColors.error,
-        onPrimary: SwNeutralColors.gray900,
-        onSecondary: SwNeutralColors.gray900,
-        onSurface: SwNeutralColors.gray100,
+        onPrimary: SwNeutralColors.black,
+        onSecondary: SwNeutralColors.black,
+        onSurface: SwNeutralColors.white,
         onError: SwNeutralColors.white,
+        outline: SwSurfaceColors.cardBorder,
       ),
-      scaffoldBackgroundColor: SwNeutralColors.black,
+      scaffoldBackgroundColor: SwSurfaceColors.background,
+      canvasColor: SwSurfaceColors.background,
+      splashFactory: InkSparkle.splashFactory,
       appBarTheme: const AppBarTheme(
-        backgroundColor: SwNeutralColors.gray900,
+        backgroundColor: SwSurfaceColors.background,
+        surfaceTintColor: Colors.transparent,
         foregroundColor: SwNeutralColors.white,
         elevation: 0,
         centerTitle: true,
       ),
+      tabBarTheme: const TabBarThemeData(
+        labelColor: SwNeutralColors.white,
+        unselectedLabelColor: SwNeutralColors.gray500,
+        indicatorColor: SwNeutralColors.white,
+        indicatorSize: TabBarIndicatorSize.tab,
+        dividerColor: Colors.transparent,
+        labelStyle: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
+        unselectedLabelStyle: TextStyle(
+          fontSize: 15,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+        ),
+      ),
       cardTheme: CardThemeData(
-        color: SwNeutralColors.gray800,
-        elevation: 2,
+        color: SwSurfaceColors.card,
+        surfaceTintColor: Colors.transparent,
+        elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: SwNeutralColors.gray800,
+        fillColor: SwSurfaceColors.card,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: SwNeutralColors.gray700),
+          borderSide: const BorderSide(color: SwSurfaceColors.cardBorder),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: SwNeutralColors.gray700),
+          borderSide: const BorderSide(color: SwSurfaceColors.cardBorder),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(
-            color: SwBrandColors.primaryLight,
+            color: SwBrandColors.primary,
             width: 2,
           ),
         ),
@@ -221,23 +258,49 @@ abstract final class SwTheme {
       ),
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: SwBrandColors.primaryLight,
-          foregroundColor: SwNeutralColors.gray900,
+          backgroundColor: SwBrandColors.primary,
+          foregroundColor: SwNeutralColors.black,
           padding: const EdgeInsets.symmetric(
             horizontal: SwSpacing.lg,
             vertical: SwSpacing.sm,
           ),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(24),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: SwNeutralColors.white,
+          side: const BorderSide(color: SwNeutralColors.white),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(24),
           ),
         ),
       ),
       floatingActionButtonTheme: const FloatingActionButtonThemeData(
-        backgroundColor: SwBrandColors.primaryLight,
-        foregroundColor: SwNeutralColors.gray900,
+        backgroundColor: SwBrandColors.primary,
+        foregroundColor: SwNeutralColors.black,
+      ),
+      snackBarTheme: const SnackBarThemeData(
+        backgroundColor: SwSurfaceColors.card,
+        contentTextStyle: TextStyle(color: SwNeutralColors.white),
+        behavior: SnackBarBehavior.floating,
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: SwSurfaceColors.surface,
+        surfaceTintColor: Colors.transparent,
+        showDragHandle: true,
+      ),
+      dialogTheme: const DialogThemeData(
+        backgroundColor: SwSurfaceColors.card,
+        surfaceTintColor: Colors.transparent,
+      ),
+      progressIndicatorTheme: const ProgressIndicatorThemeData(
+        color: SwBrandColors.primary,
       ),
       dividerTheme: const DividerThemeData(
-        color: SwNeutralColors.gray700,
+        color: SwSurfaceColors.divider,
         thickness: 1,
       ),
     );

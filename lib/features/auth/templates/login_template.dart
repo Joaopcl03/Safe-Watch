@@ -53,7 +53,7 @@ class _LoginTemplateState extends ConsumerState<LoginTemplate> {
     // Listener para navegação após login bem-sucedido.
     ref.listen<AuthState>(authControllerProvider, (previous, next) {
       if (next.isAuthenticated) {
-        context.go(SwRoutes.search);
+        context.go(SwRoutes.series);
       }
       if (next.status == AuthStatus.error && next.errorMessage != null) {
         ScaffoldMessenger.of(context).showSnackBar(

@@ -1,79 +1,50 @@
 import 'package:safe_watch/features/search/models/media_model.dart';
-import 'package:safe_watch/features/search/models/episode_model.dart';
 import 'package:safe_watch/features/watched_list/models/watched_item_model.dart';
 
 // ============================================================================
 // Safe Watch — Trakt Repository Interface
 // ============================================================================
-// Contrato abstrato para sincronização de dados com o Trakt.tv.
-// Permite trocar entre implementação real e mock em testes.
+// Contrato abstrato para sincronização com Trakt.tv.
+// Gerencia histórico de assistidos, watchlist e check-in.
 // ============================================================================
 
-/// Interface abstrata do repositório Trakt.tv.
+/// Interface abstrata do repositório de sync com Trakt.tv.
 ///
-/// Gerencia histórico de assistidos, watchlist e check-ins
-/// usando a API Trakt.tv como backend remoto.
+/// Define o contrato para sincronização de histórico,
+/// watchlist e check-in do usuário.
 abstract interface class TraktRepositoryInterface {
-  // --------------------------------------------------------------------------
-  // Histórico (Watched)
-  // --------------------------------------------------------------------------
-
-  /// Adiciona uma lista de itens ao histórico do Trakt.
-  ///
-  /// Deve ser chamado após marcar itens como assistidos localmente.
+  /// Sincroniza itens como assistidos no histórico do Trakt.
   Future<void> syncToHistory(List<WatchedItemModel> items);
 
-  /// Remove uma lista de itens do histórico do Trakt.
+  /// Remove itens do histórico do Trakt.
   Future<void> removeFromHistory(List<WatchedItemModel> items);
 
-  /// Retorna o histórico de assistidos do usuário no Trakt.
-  ///
-  /// [page] e [limit] para paginação.
-  Future<List<WatchedItemModel>> getWatchHistory({
+  /// Retorna o histórico de assistidos do Trakt.
+  Future<List<Map<String, dynamic>>> getWatchHistory({
     int page = 1,
     int limit = 20,
   });
 
-  // --------------------------------------------------------------------------
-  // Watchlist (Quero Assistir)
-  // --------------------------------------------------------------------------
-
-  /// Adiciona mídias à watchlist do Trakt.
+  /// Adiciona mídias à watchlist (quero assistir) do Trakt.
   Future<void> addToWatchlist(List<MediaModel> media);
 
   /// Remove mídias da watchlist do Trakt.
   Future<void> removeFromWatchlist(List<MediaModel> media);
 
-  /// Retorna a watchlist do usuário no Trakt.
-  Future<List<MediaModel>> getWatchlist();
+  /// Retorna a watchlist do Trakt.
+  Future<List<Map<String, dynamic>>> getWatchlist();
 
-  // --------------------------------------------------------------------------
-  // Check-in
-  // --------------------------------------------------------------------------
+  /// Realiza check-in ("assistindo agora").
+  Future<void> checkin({
+    required int tmdbId,
+    required MediaType mediaType,
+    int? seasonNumber,
+    int? episodeNumber,
+  });
 
-  /// Faz check-in em um episódio no Trakt ("assistindo agora").
-  ///
-  /// O check-in expira automaticamente após o runtime do episódio.
-  /// [show] é necessário para fornecer o Trakt ID da série.
-  Future<void> checkin(EpisodeModel episode, MediaModel show);
-
-  /// Cancela o check-in ativo no Trakt.
+  /// Cancela check-in ativo.
   Future<void> cancelCheckin();
 
-  // --------------------------------------------------------------------------
-  // Progresso
-  // --------------------------------------------------------------------------
-
-  /// Retorna o progresso de assistido de uma série.
-  ///
-  /// [traktId] é o ID ou slug da série no Trakt.
-  /// Retorna mapa com: aired, completed, last_episode, next_episode.
-  Future<Map<String, dynamic>> getShowProgress(String traktId);
-
-  // --------------------------------------------------------------------------
-  // Sincronização
-  // --------------------------------------------------------------------------
-
-  /// Verifica se o usuário está autenticado no Trakt.
-  Future<bool> get isAuthenticated;
+  /// Retorna progresso de uma série no Trakt.
+  Future<Map<String, dynamic>> getShowProgress(String showId);
 }

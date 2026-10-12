@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:safe_watch/features/search/models/episode_model.dart';
+import 'package:safe_watch/core/api/clients/trakt_client.dart';
+import 'package:safe_watch/core/config/env_config.dart';
 import 'package:safe_watch/features/search/models/media_model.dart';
 import 'package:safe_watch/features/watched_list/models/watched_item_model.dart';
 import 'package:safe_watch/features/watched_list/repositories/trakt_repository.dart';
@@ -13,117 +14,131 @@ import 'package:safe_watch/features/watched_list/repositories/watched_list_repos
 // Fluxo de dados:
 //   WatchedListTemplate (UI)
 //     → WatchedListController (lógica/estado)
-//       → WatchedListRepository (persistência local + sync Trakt)
-//         → WatchedItemModel (modelo)
+//       → WatchedListRepository (persistência local)
+//       → TraktRepository (sync remoto com Trakt.tv)
+//         → TraktClient → Trakt API
+//       → WatchedItemModel (modelo)
 //
 // O controller NÃO contém lógica de UI.
-// Ele expõe estado via AsyncNotifier e orquestra chamadas ao repository.
+// Ele coordena entre repositório local e sync remoto com Trakt.
 // ============================================================================
 
-/// Provider do repositório Trakt.
-///
-/// Pode ser sobrescrito em testes com `overrides` para injetar mocks.
-final traktRepositoryProvider = Provider<TraktRepositoryInterface>((ref) {
-  return TraktRepository();
+/// Provider do cliente Trakt.
+final traktClientProvider = Provider<TraktClient>((ref) {
+  return TraktClient();
 });
 
-/// Provider do repositório de lista de assistidos.
-///
-/// Injeta o TraktRepository para sincronização remota.
+/// Provider do repositório local de lista de assistidos.
 final watchedListRepositoryProvider =
     Provider<WatchedListRepositoryInterface>((ref) {
-  final traktRepo = ref.watch(traktRepositoryProvider);
-  return WatchedListRepository(traktRepository: traktRepo);
+  return WatchedListRepository();
+});
+
+/// Provider do repositório Trakt (nullable se não configurado).
+final traktRepositoryProvider = Provider<TraktRepositoryInterface?>((ref) {
+  if (!EnvConfig.isTraktConfigured) return null;
+  return TraktRepository(traktClient: ref.watch(traktClientProvider));
 });
 
 /// Provider do controller de lista de assistidos.
-///
-/// Expõe `AsyncValue<List<WatchedItemModel>>` para a UI.
 final watchedListControllerProvider = AsyncNotifierProvider<
     WatchedListController, List<WatchedItemModel>>(WatchedListController.new);
 
 /// Controller da lista de assistidos usando Riverpod [AsyncNotifier].
 ///
-/// Responsável por:
-/// - Carregar a lista de itens assistidos do repositório
-/// - Adicionar/remover itens com sync automático no Trakt
-/// - Alternar status (assistido ↔ quero assistir)
-/// - Atualizar progresso de episódios/temporadas
-/// - Check-in de episódio via Trakt
-/// - Marcar episódio individual como assistido
+/// Coordena entre:
+/// - [WatchedListRepository]: persistência local (offline-first)
+/// - [TraktRepository]: sync remoto com Trakt.tv (quando autenticado)
+///
+/// Fluxo:
+/// ```
+/// WatchedListTemplate
+///   └─► ref.read(watchedListControllerProvider.notifier).addToWatched(media)
+///         └─► WatchedListRepository.addWatchedItem(item)  // local
+///         └─► TraktRepository.addToWatchlist([media])      // remoto (se autenticado)
+///         └─► state = AsyncData(updatedList)
+///   └─► ref.watch(watchedListControllerProvider) → AsyncValue<List<WatchedItemModel>>
+/// ```
 class WatchedListController extends AsyncNotifier<List<WatchedItemModel>> {
-  late final WatchedListRepositoryInterface _repository;
-  late final TraktRepositoryInterface _trakt;
+  late final WatchedListRepositoryInterface _localRepository;
+  TraktRepositoryInterface? _traktRepository;
 
   @override
   Future<List<WatchedItemModel>> build() async {
-    _repository = ref.watch(watchedListRepositoryProvider);
-    _trakt = ref.watch(traktRepositoryProvider);
-    return _repository.getWatchedItems();
+    _localRepository = ref.watch(watchedListRepositoryProvider);
+    _traktRepository = ref.watch(traktRepositoryProvider);
+    return _localRepository.getWatchedItems();
   }
-
-  // --------------------------------------------------------------------------
-  // CRUD básico
-  // --------------------------------------------------------------------------
 
   /// Adiciona uma mídia à lista como "quero assistir".
   ///
-  /// Salva localmente e sincroniza a watchlist no Trakt em background.
+  /// Salva localmente e sincroniza com Trakt se autenticado.
   Future<void> addToWatched(MediaModel media) async {
     final item = WatchedItemModel.fromMedia(
       media,
       status: WatchedStatus.wantToWatch,
     );
 
-    await _repository.addWatchedItem(item);
+    // 1. Salvar localmente (offline-first).
+    await _localRepository.addWatchedItem(item);
 
-    // Sync watchlist Trakt em background.
-    _trakt.addToWatchlist([media]).catchError((_) {});
+    // 2. Sync com Trakt (se configurado e autenticado).
+    if (_traktRepository != null) {
+      try {
+        await _traktRepository!.addToWatchlist([media]);
+      } catch (_) {
+        // Falha no sync remoto não deve bloquear a operação local.
+        // TODO: Enfileirar para retry.
+      }
+    }
 
-    state = AsyncData(await _repository.getWatchedItems());
+    // 3. Atualizar estado.
+    state = AsyncData(await _localRepository.getWatchedItems());
   }
 
-  /// Remove um item da lista pelo ID.
-  ///
-  /// Remove localmente e da watchlist/histórico do Trakt.
+  /// Remove um item da lista.
   Future<void> removeFromWatched(String id) async {
-    await _repository.removeWatchedItem(id);
-    state = AsyncData(await _repository.getWatchedItems());
+    await _localRepository.removeWatchedItem(id);
+    state = AsyncData(await _localRepository.getWatchedItems());
   }
-
-  // --------------------------------------------------------------------------
-  // Status
-  // --------------------------------------------------------------------------
 
   /// Alterna o status de um item entre assistido e quero assistir.
   ///
-  /// Se o item estiver como "quero assistir", muda para "assistido"
-  /// e registra a data + sincroniza o histórico do Trakt.
-  /// Se estiver como "assistido", volta para "quero assistir".
+  /// Se marcar como assistido, sincroniza com Trakt.syncHistory.
+  /// Se desmarcar, sincroniza com Trakt.removeFromHistory.
   Future<void> toggleStatus(String id) async {
     final currentList = state.valueOrNull ?? [];
     final item = currentList.firstWhere((i) => i.id == id);
 
-    final nowWatched = item.status != WatchedStatus.watched;
+    final newStatus = item.status == WatchedStatus.watched
+        ? WatchedStatus.wantToWatch
+        : WatchedStatus.watched;
 
     final updatedItem = item.copyWith(
-      status: nowWatched ? WatchedStatus.watched : WatchedStatus.wantToWatch,
-      watchedAt: nowWatched ? DateTime.now() : null,
+      status: newStatus,
+      watchedAt: newStatus == WatchedStatus.watched ? DateTime.now() : null,
     );
 
-    await _repository.updateWatchedItem(updatedItem);
-    state = AsyncData(await _repository.getWatchedItems());
+    // 1. Atualizar localmente.
+    await _localRepository.updateWatchedItem(updatedItem);
+
+    // 2. Sync com Trakt.
+    if (_traktRepository != null) {
+      try {
+        if (newStatus == WatchedStatus.watched) {
+          await _traktRepository!.syncToHistory([updatedItem]);
+        } else {
+          await _traktRepository!.removeFromHistory([updatedItem]);
+        }
+      } catch (_) {
+        // TODO: Enfileirar para retry.
+      }
+    }
+
+    state = AsyncData(await _localRepository.getWatchedItems());
   }
 
-  // --------------------------------------------------------------------------
-  // Progresso por episódio
-  // --------------------------------------------------------------------------
-
   /// Atualiza o progresso de episódios de uma série.
-  ///
-  /// [id]: ID do item na lista local.
-  /// [season]: temporada atual.
-  /// [episode]: episódio atual.
   Future<void> updateProgress({
     required String id,
     required int season,
@@ -137,64 +152,32 @@ class WatchedListController extends AsyncNotifier<List<WatchedItemModel>> {
       episodeProgress: episode,
     );
 
-    await _repository.updateWatchedItem(updatedItem);
-    state = AsyncData(await _repository.getWatchedItems());
+    await _localRepository.updateWatchedItem(updatedItem);
+    state = AsyncData(await _localRepository.getWatchedItems());
   }
 
-  /// Marca um episódio específico como assistido via Trakt.
+  /// Realiza check-in no Trakt ("assistindo agora").
   ///
-  /// Atualiza o progresso local e sincroniza o histórico do Trakt
-  /// com granularidade de episódio via `/sync/history`.
-  ///
-  /// [id]: ID do item na lista local.
-  /// [episode]: episódio a ser marcado como assistido.
-  /// [show]: mídia (série) para obter os IDs Trakt.
-  Future<void> markEpisodeWatched({
-    required String id,
-    required EpisodeModel episode,
-    required MediaModel show,
+  /// Disponível apenas quando Trakt está configurado e autenticado.
+  Future<void> checkin({
+    required int tmdbId,
+    required MediaType mediaType,
+    int? seasonNumber,
+    int? episodeNumber,
   }) async {
-    // Atualiza progresso local.
-    await updateProgress(
-      id: id,
-      season: episode.seasonNumber,
-      episode: episode.episodeNumber,
-    );
+    if (_traktRepository == null) return;
 
-    // Cria item temporário para o sync do histórico de episódio.
-    final episodeItem = WatchedItemModel(
-      id: 'ep-${show.id}-s${episode.seasonNumber}e${episode.episodeNumber}',
-      mediaId: show.id,
-      title: '${show.title} ${episode.code}',
-      posterPath: show.posterPath,
-      mediaType: MediaType.tv,
-      status: WatchedStatus.watched,
-      watchedAt: DateTime.now(),
+    await _traktRepository!.checkin(
+      tmdbId: tmdbId,
+      mediaType: mediaType,
+      seasonNumber: seasonNumber,
+      episodeNumber: episodeNumber,
     );
-
-    // Sync Trakt com o episódio específico em background.
-    _trakt.syncToHistory([episodeItem]).catchError((_) {});
   }
 
-  // --------------------------------------------------------------------------
-  // Check-in
-  // --------------------------------------------------------------------------
-
-  /// Faz check-in em um episódio no Trakt ("assistindo agora").
-  ///
-  /// O check-in expira automaticamente após o runtime do episódio.
-  /// Retorna true se o check-in foi bem-sucedido, false caso contrário.
-  Future<bool> checkin(EpisodeModel episode, MediaModel show) async {
-    try {
-      await _trakt.checkin(episode, show);
-      return true;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Cancela o check-in ativo no Trakt.
+  /// Cancela check-in ativo no Trakt.
   Future<void> cancelCheckin() async {
-    await _trakt.cancelCheckin().catchError((_) {});
+    if (_traktRepository == null) return;
+    await _traktRepository!.cancelCheckin();
   }
 }

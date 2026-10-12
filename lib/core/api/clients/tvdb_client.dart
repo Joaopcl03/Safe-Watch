@@ -4,247 +4,160 @@ import 'package:safe_watch/core/api/api_interceptors.dart';
 import 'package:safe_watch/core/config/env_config.dart';
 
 // ============================================================================
-// Safe Watch — TheTVDB Client
+// Safe Watch — TheTVDB API v4 Client
 // ============================================================================
 // Cliente Dio para TheTVDB API v4.
-// Documentação: https://thetvdb.github.io/v4-api/
+// Responsável por metadados detalhados de séries, season orders alternativas.
 //
-// Responsabilidades:
-//   - Login JWT (POST /login) com cache de 30 dias
-//   - Busca de séries
-//   - Detalhes estendidos de série
-//   - Episódios por temporada com ordens alternativas (DVD, Absolute)
-//   - Artworks (posters, backdrops, banners)
+// Autenticação: JWT Bearer Token (login → token válido por 30 dias).
+// Base URL: https://api4.thetvdb.com/v4
+// Rate Limit: ~5-100 req/min (depende do plano)
+// Docs: https://thetvdb.github.io/v4-api/
 // ============================================================================
 
-/// Cliente HTTP para a API TheTVDB v4.
+/// Cliente para TheTVDB API v4.
 ///
-/// Gerencia automaticamente o JWT: faz login quando necessário e
-/// recicla o token antes da expiração de 30 dias.
+/// Usado como fonte secundária de metadados, especialmente para
+/// ordens alternativas de temporadas (DVD, Absolute) e anime.
 ///
-/// Singleton — use [TvdbClient.instance].
+/// Fluxo: Repository → TvdbClient → TheTVDB API → JSON
 class TvdbClient {
-  TvdbClient._() {
-    _dio = Dio(
+  TvdbClient() : _dio = _createDio();
+
+  final Dio _dio;
+
+  /// JWT token obtido via /login.
+  String? _token;
+
+  /// Data de expiração do token (30 dias após login).
+  DateTime? _tokenExpiry;
+
+  /// Cria instância configurada do Dio para TheTVDB.
+  static Dio _createDio() {
+    final dio = Dio(
       BaseOptions(
         baseUrl: ApiConfig.tvdbBaseUrl,
-        connectTimeout:
-            const Duration(seconds: ApiConfig.connectionTimeoutSeconds),
-        receiveTimeout:
-            const Duration(seconds: ApiConfig.receiveTimeoutSeconds),
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
         headers: {
-          'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'Accept-Language': 'por',
         },
       ),
     );
 
-    _dio.interceptors.addAll([
-      _TvdbAuthInterceptor(this),
+    dio.interceptors.addAll([
       RateLimitInterceptor(),
-      const LoggingInterceptor(),
-      CacheInterceptor(maxAge: const Duration(hours: 6)),
+      LoggingInterceptor(),
     ]);
+
+    return dio;
   }
 
-  static final TvdbClient instance = TvdbClient._();
+  // ── Autenticação ─────────────────────────────────────────────────────────
 
-  late final Dio _dio;
-
-  /// JWT atual do TheTVDB.
-  String? _jwtToken;
-
-  /// Timestamp da última obtenção do JWT.
-  DateTime? _tokenObtainedAt;
-
-  // --------------------------------------------------------------------------
-  // Autenticação JWT
-  // --------------------------------------------------------------------------
-
-  /// Verifica se o token atual está válido (menos de 30 dias).
-  bool get _isTokenValid {
-    if (_jwtToken == null || _tokenObtainedAt == null) return false;
-    final age = DateTime.now().difference(_tokenObtainedAt!);
-    return age.inDays < ApiConfig.tvdbTokenValidityDays;
-  }
-
-  /// Faz login no TheTVDB e obtém/renova o JWT.
+  /// Realiza login e obtém JWT token.
   ///
-  /// Endpoint: POST /login
   /// O token é válido por 30 dias.
-  Future<void> ensureAuthenticated() async {
-    if (_isTokenValid) return;
+  /// Chamado automaticamente quando necessário.
+  Future<void> _ensureAuthenticated() async {
+    if (_token != null && _tokenExpiry != null && DateTime.now().isBefore(_tokenExpiry!)) {
+      return; // Token ainda válido.
+    }
 
     final response = await _dio.post<Map<String, dynamic>>(
-      ApiConfig.tvdbLoginEndpoint,
-      data: {'apikey': EnvConfig.tvdbApiKey},
-      options: Options(extra: {'skipAuth': true}),
+      '/login',
+      data: {
+        'apikey': ApiConfig.tvdbApiKey,
+        if (EnvConfig.tvdbPin.isNotEmpty) 'pin': EnvConfig.tvdbPin,
+      },
     );
 
-    final data = response.data?['data'] as Map<String, dynamic>?;
-    _jwtToken = data?['token'] as String?;
-    _tokenObtainedAt = DateTime.now();
+    final data = response.data!['data'] as Map<String, dynamic>;
+    _token = data['token'] as String;
+    _tokenExpiry = DateTime.now().add(const Duration(days: 28)); // Margem de segurança.
+
+    // Atualiza header de autorização.
+    _dio.options.headers['Authorization'] = 'Bearer $_token';
   }
 
-  // --------------------------------------------------------------------------
-  // Busca
-  // --------------------------------------------------------------------------
+  // ── Search ──────────────────────────────────────────────────────────────
 
-  /// Busca séries por título.
-  ///
-  /// Endpoint: GET /search
-  Future<List<dynamic>> searchSeries(
-    String query, {
-    String? language,
-    int? limit,
-  }) async {
-    await ensureAuthenticated();
+  /// Busca séries por nome.
+  Future<Map<String, dynamic>> searchSeries(String query) async {
+    await _ensureAuthenticated();
     final response = await _dio.get<Map<String, dynamic>>(
       '/search',
       queryParameters: {
         'query': query,
         'type': 'series',
-        if (language != null) 'language': language,
-        if (limit != null) 'limit': limit,
       },
     );
-    return (response.data?['data'] as List<dynamic>?) ?? [];
+    return response.data!;
   }
 
-  /// Busca por ID remoto (TMDB, IMDB, etc.).
-  ///
-  /// Endpoint: GET /search/remoteid/{remoteId}
-  /// Útil para cross-reference: dado um TMDB ID, encontrar o TVDB ID.
-  Future<List<dynamic>> searchByRemoteId(String remoteId) async {
-    await ensureAuthenticated();
+  /// Busca por ID externo (IMDB, TMDB, etc.).
+  Future<Map<String, dynamic>> searchByRemoteId(String remoteId) async {
+    await _ensureAuthenticated();
     final response = await _dio.get<Map<String, dynamic>>(
       '/search/remoteid/$remoteId',
     );
-    return (response.data?['data'] as List<dynamic>?) ?? [];
+    return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Detalhes de Série
-  // --------------------------------------------------------------------------
+  // ── Detalhes ─────────────────────────────────────────────────────────────
 
-  /// Retorna os detalhes básicos de uma série pelo ID TheTVDB.
-  ///
-  /// Endpoint: GET /series/{id}
-  Future<Map<String, dynamic>> getSeriesById(int id) async {
-    await ensureAuthenticated();
-    final response = await _dio.get<Map<String, dynamic>>('/series/$id');
-    return (response.data?['data'] as Map<String, dynamic>?) ?? {};
-  }
-
-  /// Retorna os detalhes estendidos de uma série (com temporadas, artworks, etc.).
-  ///
-  /// Endpoint: GET /series/{id}/extended
-  Future<Map<String, dynamic>> getSeriesExtended(
-    int id, {
-    String? meta,
-    bool short = false,
-  }) async {
-    await ensureAuthenticated();
+  /// Retorna detalhes estendidos de uma série, incluindo temporadas e artworks.
+  Future<Map<String, dynamic>> getSeriesExtended(int seriesId) async {
+    await _ensureAuthenticated();
     final response = await _dio.get<Map<String, dynamic>>(
-      '/series/$id/extended',
-      queryParameters: {
-        if (meta != null) 'meta': meta,
-        if (short) 'short': 'true',
-      },
+      '/series/$seriesId/extended',
     );
-    return (response.data?['data'] as Map<String, dynamic>?) ?? {};
+    return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Episódios
-  // --------------------------------------------------------------------------
+  // ── Episódios por Season Type ────────────────────────────────────────────
 
-  /// Retorna os episódios de uma série pela ordem padrão (aired order).
+  /// Retorna episódios de uma série por tipo de ordem de temporada.
   ///
-  /// Endpoint: GET /series/{id}/episodes/default
-  Future<Map<String, dynamic>> getEpisodesByDefault(
+  /// [seriesId]: ID da série no TheTVDB.
+  /// [seasonType]: 'default' (Aired), 'official', 'dvd', 'absolute', 'alternate', 'regional'.
+  /// [page]: página de resultados (padrão: 0).
+  /// [season]: filtrar por temporada específica.
+  Future<Map<String, dynamic>> getEpisodesBySeason(
     int seriesId, {
+    String seasonType = 'default',
     int page = 0,
-    String? language,
-  }) async {
-    await ensureAuthenticated();
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/series/$seriesId/episodes/default',
-      queryParameters: {
-        'page': page,
-        if (language != null) 'lang': language,
-      },
-    );
-    return (response.data?['data'] as Map<String, dynamic>?) ?? {};
-  }
-
-  /// Retorna os episódios de uma série em uma ordem alternativa.
-  ///
-  /// Endpoint: GET /series/{id}/episodes/{season-type}
-  /// [seasonType] pode ser: 'default', 'dvd', 'absolute', 'alternate',
-  ///              'regional', 'altdvd', 'officialrating', 'pilot'
-  Future<Map<String, dynamic>> getEpisodesBySeasonType(
-    int seriesId,
-    String seasonType, {
-    int page = 0,
-    String? language,
     int? season,
   }) async {
-    await ensureAuthenticated();
+    await _ensureAuthenticated();
     final response = await _dio.get<Map<String, dynamic>>(
       '/series/$seriesId/episodes/$seasonType',
       queryParameters: {
         'page': page,
-        if (language != null) 'lang': language,
         if (season != null) 'season': season,
       },
     );
-    return (response.data?['data'] as Map<String, dynamic>?) ?? {};
+    return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Artworks
-  // --------------------------------------------------------------------------
+  // ── Season & Episode Details ─────────────────────────────────────────────
 
-  /// Retorna os artworks (imagens) de uma série.
-  ///
-  /// Endpoint: GET /series/{id}/artworks
-  /// [type] filtra por tipo: 1=banner, 2=poster, 3=background, 22=icon
-  Future<List<dynamic>> getSeriesArtworks(
-    int seriesId, {
-    int? type,
-    String? language,
-  }) async {
-    await ensureAuthenticated();
+  /// Retorna detalhes estendidos de uma temporada.
+  Future<Map<String, dynamic>> getSeasonExtended(int seasonId) async {
+    await _ensureAuthenticated();
     final response = await _dio.get<Map<String, dynamic>>(
-      '/series/$seriesId/artworks',
-      queryParameters: {
-        if (type != null) 'type': type,
-        if (language != null) 'lang': language,
-      },
+      '/seasons/$seasonId/extended',
     );
-    return (response.data?['data'] as List<dynamic>?) ?? [];
+    return response.data!;
   }
-}
 
-// ----------------------------------------------------------------------------
-// Auth Interceptor interno
-// ----------------------------------------------------------------------------
-
-/// Interceptor que injeta o JWT do TheTVDB nas requisições autenticadas.
-class _TvdbAuthInterceptor extends Interceptor {
-  const _TvdbAuthInterceptor(this._client);
-
-  final TvdbClient _client;
-
-  @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final skipAuth = options.extra['skipAuth'] as bool? ?? false;
-
-    if (!skipAuth && _client._jwtToken != null) {
-      options.headers['Authorization'] = 'Bearer ${_client._jwtToken}';
-    }
-
-    handler.next(options);
+  /// Retorna detalhes estendidos de um episódio.
+  Future<Map<String, dynamic>> getEpisodeExtended(int episodeId) async {
+    await _ensureAuthenticated();
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/episodes/$episodeId/extended',
+    );
+    return response.data!;
   }
 }

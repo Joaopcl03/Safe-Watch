@@ -5,67 +5,61 @@ import 'package:safe_watch/features/search/models/streaming_source_model.dart';
 // ============================================================================
 // Safe Watch — Search Repository Interface
 // ============================================================================
-// Contrato abstrato para busca de mídia e dados relacionados.
-// Permite trocar entre implementações (mock, TMDB API, outras APIs)
-// sem alterar o controller ou a UI.
+// Contrato abstrato para busca e consulta de mídia.
+// Primário: TMDB (catálogo, imagens, busca)
+// Secundário: TheTVDB (metadados detalhados), Watchmode (streaming)
 // ============================================================================
 
 /// Interface abstrata do repositório de busca de mídia.
 ///
-/// Qualquer implementação (mock, TMDB real, etc.)
-/// deve implementar esta interface.
+/// Define o contrato para busca, detalhes, temporadas
+/// e disponibilidade em streaming.
 abstract interface class SearchRepositoryInterface {
-  // --------------------------------------------------------------------------
-  // Busca
-  // --------------------------------------------------------------------------
-
-  /// Busca mídias (séries + filmes) por título.
+  /// Busca séries e filmes por título.
   ///
-  /// Implementação padrão: usa TMDB `/search/multi`.
   /// [query] é o termo de busca.
+  /// Retorna lista combinada de séries e filmes.
   Future<List<MediaModel>> searchMedia(String query);
 
   /// Busca apenas séries de TV por título.
-  ///
-  /// Usa TMDB `/search/tv`. Retorna resultados com [MediaType.tv].
   Future<List<MediaModel>> searchTv(String query);
 
   /// Busca apenas filmes por título.
-  ///
-  /// Usa TMDB `/search/movie`. Retorna resultados com [MediaType.movie].
   Future<List<MediaModel>> searchMovies(String query);
 
-  // --------------------------------------------------------------------------
-  // Detalhes
-  // --------------------------------------------------------------------------
-
-  /// Retorna os detalhes básicos de uma mídia pelo ID TMDB.
+  /// Retorna detalhes completos de uma série, incluindo temporadas e IDs externos.
   ///
-  /// [id] é o TMDB ID. [mediaType] indica se é filme ou série.
-  Future<MediaModel> getMediaDetails(int id, MediaType mediaType);
-
-  /// Retorna os detalhes completos de uma série de TV.
-  ///
-  /// Inclui temporadas, IDs externos (imdb, tvdb) e status de produção.
-  /// Usa TMDB `/tv/{id}?append_to_response=external_ids`.
+  /// [tmdbId] é o ID da série no TMDB.
   Future<MediaModel> getTvDetails(int tmdbId);
 
-  /// Retorna os detalhes de uma temporada específica com todos os episódios.
-  ///
-  /// Usa TMDB `/tv/{id}/season/{num}`.
-  Future<SeasonModel> getSeasonDetails(int tmdbId, int seasonNumber);
+  /// Retorna detalhes completos de um filme.
+  Future<MediaModel> getMovieDetails(int tmdbId);
 
-  // --------------------------------------------------------------------------
-  // Streaming
-  // --------------------------------------------------------------------------
+  /// Retorna detalhes de uma temporada com lista de episódios.
+  ///
+  /// [tmdbId] é o ID da série no TMDB.
+  /// [seasonNumber] é o número da temporada.
+  Future<SeasonModel> getSeasonDetails(int tmdbId, int seasonNumber);
 
   /// Retorna as fontes de streaming disponíveis para um título.
   ///
-  /// Usa Watchmode como fonte primária e TMDB `/watch/providers` como fallback.
-  /// [region] é o código de país (ex: 'BR', 'US').
+  /// [tmdbId] é o ID no TMDB.
+  /// [mediaType] indica se é filme ou série.
+  /// [region] é o código do país (ex: 'BR').
   Future<List<StreamingSourceModel>> getStreamingSources(
     int tmdbId,
     MediaType mediaType, {
-    String region = 'BR',
+    String region,
   });
+
+  /// Retorna mídias em tendência.
+  ///
+  /// [mediaType] nulo retorna séries e filmes misturados.
+  Future<List<MediaModel>> getTrending({MediaType? mediaType});
+
+  /// Retorna lançamentos em breve (filmes) ou séries no ar (TV).
+  Future<List<MediaModel>> getUpcoming(MediaType mediaType);
+
+  /// Retorna mídias populares do tipo informado.
+  Future<List<MediaModel>> getPopular(MediaType mediaType);
 }

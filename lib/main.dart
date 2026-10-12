@@ -31,7 +31,7 @@ class SafeWatchApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: SwTheme.lightTheme,
       darkTheme: SwTheme.darkTheme,
-      themeMode: ThemeMode.system,
+      themeMode: ThemeMode.dark,
       routerConfig: appRouter,
     );
   }

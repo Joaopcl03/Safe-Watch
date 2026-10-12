@@ -1,205 +1,126 @@
 import 'package:dio/dio.dart';
 import 'package:safe_watch/core/api/api_config.dart';
 import 'package:safe_watch/core/api/api_interceptors.dart';
-import 'package:safe_watch/core/config/env_config.dart';
 
 // ============================================================================
-// Safe Watch — Watchmode Client
+// Safe Watch — Watchmode API Client
 // ============================================================================
-// Cliente Dio para Watchmode API v1.
-// Documentação: https://api.watchmode.com/docs/
+// Cliente Dio para Watchmode API.
+// Responsável por consultar disponibilidade em streaming por país.
 //
-// Responsabilidades:
-//   - Localizar títulos por ID TMDB
-//   - Retornar fontes de streaming disponíveis por região
-//   - Listar providers disponíveis
-//
-// Plano gratuito: 1000 req/mês — use cache agressivo.
+// Autenticação: API Key via header X-API-Key.
+// Base URL: https://api.watchmode.com/v1
+// Rate Limit: Free 1000/mês, ~2-5 req/s
+// Docs: https://api.watchmode.com/docs/
 // ============================================================================
 
-/// Cliente HTTP para a API Watchmode v1.
+/// Cliente para a Watchmode API.
 ///
-/// Singleton — use [WatchmodeClient.instance].
-/// Usa cache de 24h por padrão para economizar cota do plano gratuito.
+/// Consulta em quais serviços de streaming um título está disponível,
+/// com deep links para cada plataforma.
+///
+/// Fluxo: SearchRepository → WatchmodeClient → Watchmode API → JSON
 class WatchmodeClient {
-  WatchmodeClient._() {
-    _dio = Dio(
+  WatchmodeClient() : _dio = _createDio();
+
+  final Dio _dio;
+
+  /// Cria instância configurada do Dio para Watchmode.
+  static Dio _createDio() {
+    final dio = Dio(
       BaseOptions(
         baseUrl: ApiConfig.watchmodeBaseUrl,
-        connectTimeout:
-            const Duration(seconds: ApiConfig.connectionTimeoutSeconds),
-        receiveTimeout:
-            const Duration(seconds: ApiConfig.receiveTimeoutSeconds),
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
         headers: {
           'Accept': 'application/json',
+          'X-API-Key': ApiConfig.watchmodeApiKey,
         },
       ),
     );
 
-    _dio.interceptors.addAll([
-      _WatchmodeApiKeyInterceptor(),
+    dio.interceptors.addAll([
       RateLimitInterceptor(),
-      const LoggingInterceptor(),
-      // Cache mais longo (24h) para economizar cota do plano gratuito.
-      CacheInterceptor(maxAge: const Duration(hours: 24)),
+      LoggingInterceptor(),
     ]);
+
+    return dio;
   }
 
-  static final WatchmodeClient instance = WatchmodeClient._();
+  // ── Busca por ID externo ─────────────────────────────────────────────────
 
-  late final Dio _dio;
-
-  // --------------------------------------------------------------------------
-  // Busca de Títulos
-  // --------------------------------------------------------------------------
-
-  /// Busca um título no Watchmode pelo ID do TMDB.
+  /// Busca o ID Watchmode de um título usando o TMDB ID.
   ///
-  /// Endpoint: GET /search/
-  /// Retorna o Watchmode ID que pode ser usado para buscar as fontes.
+  /// [tmdbId]: ID do título no TMDB.
+  /// [type]: 'tmdb_tv_id' para séries, 'tmdb_movie_id' para filmes.
   ///
-  /// [tmdbId] é o ID do TMDB.
-  /// [titleType] pode ser: 'movie' ou 'tv_movie', 'tv_series', 'tv_miniseries',
-  ///             'tv_special', 'tv_short', 'short_film', 'documentary'
-  Future<Map<String, dynamic>> searchByTmdbId({
-    required int tmdbId,
-    required String titleType,
+  /// Retorna mapa com `title_results` contendo o Watchmode ID.
+  Future<Map<String, dynamic>> searchByTmdbId(
+    int tmdbId, {
+    String type = 'tmdb_tv_id',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/search/',
       queryParameters: {
-        'search_field': 'tmdb_id',
-        'search_value': tmdbId.toString(),
-        'types': titleType,
+        'apiKey': ApiConfig.watchmodeApiKey,
+        'search_field': type,
+        'search_value': tmdbId,
       },
     );
     return response.data!;
   }
 
-  /// Busca um título por texto.
-  ///
-  /// Endpoint: GET /search/
-  Future<Map<String, dynamic>> searchByText(
-    String query, {
-    String? titleType,
-  }) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/search/',
-      queryParameters: {
-        'search_field': 'name',
-        'search_value': query,
-        if (titleType != null) 'types': titleType,
-      },
-    );
-    return response.data!;
-  }
+  // ── Fontes de Streaming ──────────────────────────────────────────────────
 
-  // --------------------------------------------------------------------------
-  // Fontes de Streaming
-  // --------------------------------------------------------------------------
-
-  /// Retorna as fontes de streaming disponíveis para um título.
+  /// Retorna os serviços de streaming onde o título está disponível.
   ///
-  /// Endpoint: GET /title/{id}/sources/
-  /// [watchmodeId] é obtido via [searchByTmdbId].
-  /// [regions] filtra por país (ex: 'BR', 'US'). Padrão: todos os países.
+  /// [titleId]: ID do título no Watchmode.
+  /// [regions]: códigos de país (ex: 'BR', 'US').
+  ///
+  /// Cada fonte inclui: nome, tipo (sub/free/rent/buy), URLs (web/iOS/Android),
+  /// formato (HD/4K) e preço.
   Future<List<dynamic>> getSourcesForTitle(
-    int watchmodeId, {
-    List<String>? regions,
+    int titleId, {
+    String regions = 'BR',
   }) async {
     final response = await _dio.get<List<dynamic>>(
-      '/title/$watchmodeId/sources/',
+      '/title/$titleId/sources/',
       queryParameters: {
-        if (regions != null && regions.isNotEmpty)
-          'regions': regions.join(','),
+        'apiKey': ApiConfig.watchmodeApiKey,
+        'regions': regions,
       },
     );
     return response.data!;
   }
 
-  /// Busca as fontes de streaming a partir de um TMDB ID diretamente.
+  /// Retorna detalhes do título com fontes de streaming anexadas.
   ///
-  /// Combina [searchByTmdbId] + [getSourcesForTitle] em uma única chamada
-  /// conveniente. Retorna lista vazia se o título não for encontrado.
-  ///
-  /// [mediaType] deve ser 'movie' ou 'tv_series'.
-  Future<List<dynamic>> getSourcesByTmdbId({
-    required int tmdbId,
-    required String mediaType,
-    List<String>? regions,
-  }) async {
-    try {
-      final searchResult = await searchByTmdbId(
-        tmdbId: tmdbId,
-        titleType: mediaType == 'tv' ? 'tv_series' : 'movie',
-      );
-
-      final titleResults =
-          searchResult['title_results'] as List<dynamic>? ?? [];
-      if (titleResults.isEmpty) return [];
-
-      final watchmodeId = titleResults.first['id'] as int?;
-      if (watchmodeId == null) return [];
-
-      return getSourcesForTitle(watchmodeId, regions: regions);
-    } on DioException {
-      // Retorna lista vazia em caso de erro (Watchmode é fallback).
-      return [];
-    }
+  /// [titleId]: ID do título no Watchmode.
+  /// Combina detalhes + sources em uma única requisição.
+  Future<Map<String, dynamic>> getTitleDetailsWithSources(int titleId) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/title/$titleId/details/',
+      queryParameters: {
+        'apiKey': ApiConfig.watchmodeApiKey,
+        'append_to_response': 'sources',
+      },
+    );
+    return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Providers
-  // --------------------------------------------------------------------------
+  // ── Providers ────────────────────────────────────────────────────────────
 
-  /// Lista todos os providers disponíveis no Watchmode.
+  /// Retorna a lista de todos os provedores de streaming disponíveis.
   ///
-  /// Endpoint: GET /sources/
-  /// Retorna nome, logo, tipo e países disponíveis.
-  Future<List<dynamic>> getProviders({String? region}) async {
+  /// [regions]: filtrar por país (ex: 'BR').
+  Future<List<dynamic>> getProviders({String regions = 'BR'}) async {
     final response = await _dio.get<List<dynamic>>(
       '/sources/',
       queryParameters: {
-        if (region != null) 'regions': region,
-      },
-      options: Options(extra: {'useCache': true}),
-    );
-    return response.data!;
-  }
-
-  // --------------------------------------------------------------------------
-  // Detalhes de Título
-  // --------------------------------------------------------------------------
-
-  /// Retorna os detalhes completos de um título no Watchmode.
-  ///
-  /// Endpoint: GET /title/{id}/details/
-  Future<Map<String, dynamic>> getTitleDetails(
-    int watchmodeId, {
-    bool appendToResponse = true,
-  }) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/title/$watchmodeId/details/',
-      queryParameters: {
-        if (appendToResponse) 'append_to_response': 'sources',
+        'apiKey': ApiConfig.watchmodeApiKey,
+        'regions': regions,
       },
     );
     return response.data!;
-  }
-}
-
-// ----------------------------------------------------------------------------
-// API Key Interceptor
-// ----------------------------------------------------------------------------
-
-/// Interceptor que injeta a API key do Watchmode em todas as requisições.
-///
-/// A Watchmode aceita a key via query parameter ou header X-API-Key.
-/// Usamos query parameter pois é o método mais comum para esta API.
-class _WatchmodeApiKeyInterceptor extends Interceptor {
-  @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    options.queryParameters['apiKey'] = EnvConfig.watchmodeApiKey;
-    handler.next(options);
   }
 }

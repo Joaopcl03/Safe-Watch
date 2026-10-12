@@ -1,8 +1,5 @@
-import 'package:dio/dio.dart';
-import 'package:safe_watch/core/api/api_config.dart';
 import 'package:safe_watch/core/api/clients/tmdb_client.dart';
 import 'package:safe_watch/core/api/clients/watchmode_client.dart';
-import 'package:safe_watch/core/config/env_config.dart';
 import 'package:safe_watch/features/search/models/media_model.dart';
 import 'package:safe_watch/features/search/models/season_model.dart';
 import 'package:safe_watch/features/search/models/streaming_source_model.dart';
@@ -12,264 +9,185 @@ import 'package:safe_watch/features/search/repositories/search_repository_interf
 // Safe Watch — Search Repository (TMDB + Watchmode)
 // ============================================================================
 // Implementação real do repositório de busca usando:
-//   - TMDB como fonte primária para busca, detalhes e temporadas
-//   - Watchmode como fonte primária para streaming
-//   - TMDB /watch/providers como fallback para streaming
+//   - TMDB API: catálogo, busca, detalhes, temporadas
+//   - Watchmode API: disponibilidade em streaming
+//
+// Fluxo de dados:
+//   SearchTemplate → SearchController → SearchRepository
+//     → TmdbClient / WatchmodeClient → API → JSON → Model
 // ============================================================================
 
-/// Implementação real do [SearchRepositoryInterface].
+/// Implementação do [SearchRepositoryInterface] usando TMDB + Watchmode.
 ///
-/// Usa [TmdbClient] para busca e detalhes de mídia,
+/// Usa [TmdbClient] para busca e metadados de catálogo,
 /// e [WatchmodeClient] para disponibilidade em streaming.
 class SearchRepository implements SearchRepositoryInterface {
   SearchRepository({
-    TmdbClient? tmdbClient,
+    required TmdbClient tmdbClient,
     WatchmodeClient? watchmodeClient,
-  })  : _tmdb = tmdbClient ?? TmdbClient.instance,
-        _watchmode = watchmodeClient ?? WatchmodeClient.instance;
+  })  : _tmdbClient = tmdbClient,
+        _watchmodeClient = watchmodeClient;
 
-  final TmdbClient _tmdb;
-  final WatchmodeClient _watchmode;
-
-  // --------------------------------------------------------------------------
-  // Busca
-  // --------------------------------------------------------------------------
+  final TmdbClient _tmdbClient;
+  final WatchmodeClient? _watchmodeClient;
 
   @override
   Future<List<MediaModel>> searchMedia(String query) async {
     if (query.trim().isEmpty) return [];
-    _assertApiKeyConfigured();
 
-    try {
-      final data = await _tmdb.searchMulti(query);
-      final results = (data['results'] as List<dynamic>?) ?? [];
+    // Busca multi no TMDB (séries + filmes + pessoas).
+    // Filtra apenas TV e Movie (ignora Person).
+    final response = await _tmdbClient.searchMulti(query);
+    final results = response['results'] as List<dynamic>;
 
-      return results
-          .cast<Map<String, dynamic>>()
-          .where((r) =>
-              r['media_type'] == 'tv' || r['media_type'] == 'movie')
-          .map(MediaModel.fromTmdbSearchJson)
-          .toList();
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
+    return results
+        .where((item) {
+          final type = item['media_type'] as String?;
+          return type == 'tv' || type == 'movie';
+        })
+        .map((item) => MediaModel.fromTmdbJson(item as Map<String, dynamic>))
+        .toList();
   }
 
   @override
   Future<List<MediaModel>> searchTv(String query) async {
     if (query.trim().isEmpty) return [];
-    _assertApiKeyConfigured();
 
-    try {
-      final data = await _tmdb.searchTv(query);
-      final results = (data['results'] as List<dynamic>?) ?? [];
+    final response = await _tmdbClient.searchTv(query);
+    final results = response['results'] as List<dynamic>;
 
-      return results
-          .cast<Map<String, dynamic>>()
-          .map((r) => MediaModel.fromTmdbSearchJson(r, forceType: MediaType.tv))
-          .toList();
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
+    return results
+        .map((item) => MediaModel.fromTmdbJson(
+              item as Map<String, dynamic>,
+              forceType: MediaType.tv,
+            ))
+        .toList();
   }
 
   @override
   Future<List<MediaModel>> searchMovies(String query) async {
     if (query.trim().isEmpty) return [];
-    _assertApiKeyConfigured();
 
-    try {
-      final data = await _tmdb.searchMovie(query);
-      final results = (data['results'] as List<dynamic>?) ?? [];
+    final response = await _tmdbClient.searchMovie(query);
+    final results = response['results'] as List<dynamic>;
 
-      return results
-          .cast<Map<String, dynamic>>()
-          .map((r) =>
-              MediaModel.fromTmdbSearchJson(r, forceType: MediaType.movie))
-          .toList();
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // Detalhes
-  // --------------------------------------------------------------------------
-
-  @override
-  Future<MediaModel> getMediaDetails(int id, MediaType mediaType) async {
-    if (mediaType == MediaType.tv) return getTvDetails(id);
-    _assertApiKeyConfigured();
-
-    try {
-      final data = await _tmdb.getMovieDetails(
-        id,
-        appendToResponse: 'external_ids',
-      );
-      return MediaModel.fromTmdbDetailsJson(data, MediaType.movie);
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
+    return results
+        .map((item) => MediaModel.fromTmdbJson(
+              item as Map<String, dynamic>,
+              forceType: MediaType.movie,
+            ))
+        .toList();
   }
 
   @override
   Future<MediaModel> getTvDetails(int tmdbId) async {
-    _assertApiKeyConfigured();
+    // Busca detalhes com external_ids para cross-reference.
+    final response = await _tmdbClient.getTvDetails(
+      tmdbId,
+      appendToResponse: 'external_ids',
+    );
 
-    try {
-      final data = await _tmdb.getTvDetails(
-        tmdbId,
-        appendToResponse: 'external_ids',
-      );
-      return MediaModel.fromTmdbDetailsJson(data, MediaType.tv);
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
+    return MediaModel.fromTmdbDetailsJson(response, type: MediaType.tv);
+  }
+
+  @override
+  Future<MediaModel> getMovieDetails(int tmdbId) async {
+    final response = await _tmdbClient.getMovieDetails(
+      tmdbId,
+      appendToResponse: 'external_ids',
+    );
+
+    return MediaModel.fromTmdbDetailsJson(response, type: MediaType.movie);
   }
 
   @override
   Future<SeasonModel> getSeasonDetails(int tmdbId, int seasonNumber) async {
-    _assertApiKeyConfigured();
-
-    try {
-      final data = await _tmdb.getSeasonDetails(tmdbId, seasonNumber);
-      return SeasonModel.fromTmdbJson(data);
-    } on DioException catch (e) {
-      throw _mapDioError(e);
-    }
+    final response = await _tmdbClient.getSeasonDetails(tmdbId, seasonNumber);
+    return SeasonModel.fromTmdbJson(response);
   }
-
-  // --------------------------------------------------------------------------
-  // Streaming
-  // --------------------------------------------------------------------------
 
   @override
   Future<List<StreamingSourceModel>> getStreamingSources(
     int tmdbId,
     MediaType mediaType, {
-    String region = ApiConfig.tmdbDefaultRegion,
+    String region = 'BR',
   }) async {
-    // Tenta Watchmode primeiro.
+    // Se Watchmode não está configurado, retorna lista vazia.
+    if (_watchmodeClient == null) return [];
+
     try {
-      final sources = await _watchmode.getSourcesByTmdbId(
-        tmdbId: tmdbId,
-        mediaType: mediaType == MediaType.tv ? 'tv' : 'movie',
-        regions: [region],
+      // 1. Buscar o Watchmode ID usando o TMDB ID.
+      final searchType =
+          mediaType == MediaType.tv ? 'tmdb_tv_id' : 'tmdb_movie_id';
+      final searchResult = await _watchmodeClient.searchByTmdbId(
+        tmdbId,
+        type: searchType,
       );
 
-      if (sources.isNotEmpty) {
-        return sources
-            .cast<Map<String, dynamic>>()
-            .map(StreamingSourceModel.fromWatchmodeJson)
-            .toList();
-      }
-    } catch (_) {
-      // Watchmode falhou — usa fallback TMDB.
-    }
+      final titleResults = searchResult['title_results'] as List<dynamic>?;
+      if (titleResults == null || titleResults.isEmpty) return [];
 
-    // Fallback: TMDB /watch/providers (JustWatch).
-    return _getStreamingSourcesFromTmdb(tmdbId, mediaType, region);
-  }
+      final watchmodeId =
+          (titleResults.first as Map<String, dynamic>)['id'] as int;
 
-  /// Fallback: obtém fontes de streaming via TMDB JustWatch.
-  Future<List<StreamingSourceModel>> _getStreamingSourcesFromTmdb(
-    int tmdbId,
-    MediaType mediaType,
-    String region,
-  ) async {
-    try {
-      final Map<String, dynamic> data;
-      if (mediaType == MediaType.tv) {
-        data = await _tmdb.getTvWatchProviders(tmdbId, region: region);
-      } else {
-        data = await _tmdb.getMovieWatchProviders(tmdbId, region: region);
-      }
+      // 2. Buscar fontes de streaming para o título.
+      final sources = await _watchmodeClient.getSourcesForTitle(
+        watchmodeId,
+        regions: region,
+      );
 
-      final sources = <StreamingSourceModel>[];
-
-      final typeMap = {
-        'flatrate': StreamingType.subscription,
-        'free': StreamingType.free,
-        'rent': StreamingType.rent,
-        'buy': StreamingType.buy,
-      };
-
-      for (final entry in typeMap.entries) {
-        final providers = (data[entry.key] as List<dynamic>?) ?? [];
-        sources.addAll(
-          providers.cast<Map<String, dynamic>>().map(
-                (p) => StreamingSourceModel.fromTmdbProviderJson(
-                  p,
-                  providerType: entry.value,
-                  region: region,
-                ),
-              ),
-        );
-      }
-
-      return sources;
-    } on DioException {
+      return sources
+          .map((s) => StreamingSourceModel.fromWatchmodeJson(
+                s as Map<String, dynamic>,
+              ))
+          .toList();
+    } catch (e) {
+      // Fallback: retornar lista vazia se Watchmode falhar.
       return [];
     }
   }
 
-  // --------------------------------------------------------------------------
-  // Helpers
-  // --------------------------------------------------------------------------
-
-  /// Verifica se a API key do TMDB está configurada e lança erro amigável.
-  void _assertApiKeyConfigured() {
-    if (EnvConfig.tmdbApiKey.isEmpty) {
-      throw const ApiKeyMissingException(
-        'API key do TMDB não configurada.\n'
-        'Execute o app com:\n'
-        'flutter run --dart-define=TMDB_API_KEY=sua_chave',
-      );
-    }
+  @override
+  Future<List<MediaModel>> getTrending({MediaType? mediaType}) async {
+    final typePath = switch (mediaType) {
+      MediaType.tv => 'tv',
+      MediaType.movie => 'movie',
+      null => 'all',
+    };
+    final response = await _tmdbClient.getTrending(mediaType: typePath);
+    return _parseResults(response, forceType: mediaType);
   }
-
-  /// Converte [DioException] em mensagem de erro legível para o usuário.
-  Exception _mapDioError(DioException e) {
-    final status = e.response?.statusCode;
-
-    if (status == 401) {
-      return const ApiKeyMissingException(
-        'Chave da API inválida ou não autorizada.\n'
-        'Verifique sua TMDB_API_KEY em:\n'
-        'themoviedb.org/settings/api',
-      );
-    }
-
-    if (status == 404) {
-      return Exception('Conteúdo não encontrado.');
-    }
-
-    if (status == 429) {
-      return Exception('Limite de requisições atingido. Tente novamente em instantes.');
-    }
-
-    if (e.type == DioExceptionType.connectionTimeout ||
-        e.type == DioExceptionType.receiveTimeout) {
-      return Exception('Tempo de conexão esgotado. Verifique sua internet.');
-    }
-
-    if (e.type == DioExceptionType.connectionError) {
-      return Exception('Sem conexão com a internet.');
-    }
-
-    return Exception('Erro ao buscar: ${e.message}');
-  }
-}
-
-// ----------------------------------------------------------------------------
-// Exceções de API
-// ----------------------------------------------------------------------------
-
-/// Lançada quando a API key não está configurada ou é inválida (401).
-class ApiKeyMissingException implements Exception {
-  const ApiKeyMissingException(this.message);
-  final String message;
 
   @override
-  String toString() => message;
+  Future<List<MediaModel>> getUpcoming(MediaType mediaType) async {
+    final response = mediaType == MediaType.movie
+        ? await _tmdbClient.getUpcomingMovies()
+        : await _tmdbClient.getOnTheAirTv();
+    return _parseResults(response, forceType: mediaType);
+  }
+
+  @override
+  Future<List<MediaModel>> getPopular(MediaType mediaType) async {
+    final response = await _tmdbClient.getPopular(
+      mediaType: mediaType == MediaType.tv ? 'tv' : 'movie',
+    );
+    return _parseResults(response, forceType: mediaType);
+  }
+
+  /// Converte a lista `results` do TMDB em [MediaModel], ignorando pessoas.
+  List<MediaModel> _parseResults(
+    Map<String, dynamic> response, {
+    MediaType? forceType,
+  }) {
+    final results = response['results'] as List<dynamic>? ?? const [];
+    return results
+        .cast<Map<String, dynamic>>()
+        .where((item) {
+          if (forceType != null) return true;
+          final type = item['media_type'] as String?;
+          return type == 'tv' || type == 'movie';
+        })
+        .map((item) => MediaModel.fromTmdbJson(item, forceType: forceType))
+        .toList();
+  }
 }

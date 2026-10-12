@@ -70,7 +70,7 @@ TextStyle getTextStyle(
   required SwTypeTypography typo,
   Color? color,
 }) {
-  final defaultColor = color ?? SwNeutralColors.gray900;
+  final defaultColor = color ?? Theme.of(context).colorScheme.onSurface;
 
   return switch (typo) {
     SwTypeTypography.display => TextStyle(

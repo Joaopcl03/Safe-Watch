@@ -1,11 +1,11 @@
-import 'package:safe_watch/core/api/clients/tmdb_client.dart';
 import 'package:safe_watch/features/search/models/season_model.dart';
 import 'package:safe_watch/features/search/models/trakt_ids_model.dart';
 
 // ============================================================================
 // Safe Watch — Media Model
 // ============================================================================
-// Modelo de dados para séries e filmes vindos da API (ex: TMDB).
+// Modelo de dados para séries e filmes.
+// Suporta dados do TMDB, TheTVDB e Trakt via IDs cruzados.
 // Fluxo: SearchTemplate → SearchController → SearchRepository → MediaModel
 // ============================================================================
 
@@ -18,48 +18,16 @@ enum MediaType {
   tv,
 }
 
-/// Status de produção de uma série ou filme.
-enum MediaStatus {
-  /// Em exibição / retornando para nova temporada.
-  returning,
-
-  /// Encerrado.
-  ended,
-
-  /// Em produção (ainda não estreou).
-  inProduction,
-
-  /// Cancelado.
-  canceled,
-
-  /// Piloto.
-  pilot,
-
-  /// Status desconhecido.
-  unknown,
-}
-
 /// Modelo de dados de uma mídia (filme ou série).
 ///
-/// Representa os dados completos retornados pelas APIs de busca e detalhes.
+/// Representa dados consolidados de múltiplas APIs.
 /// Imutável por design — crie novas instâncias ao invés de modificar.
 ///
-/// Campos básicos (busca):
-/// - [id]: ID TMDB da mídia.
-/// - [title]: Título da mídia.
-/// - [overview]: Sinopse.
-/// - [posterPath]: Caminho do poster.
-/// - [backdropPath]: Caminho do backdrop (imagem de fundo).
-/// - [releaseDate]: Data de lançamento.
-/// - [mediaType]: Tipo ([MediaType.movie] ou [MediaType.tv]).
-/// - [voteAverage]: Nota média (0.0–10.0).
-///
-/// Campos de cross-reference (detalhes):
-/// - [ids]: IDs nas diferentes APIs ([TraktIds]).
-/// - [numberOfSeasons]: Total de temporadas (séries).
-/// - [numberOfEpisodes]: Total de episódios (séries).
-/// - [status]: Status de produção.
-/// - [seasons]: Lista de temporadas com detalhes.
+/// IDs cruzados permitem identificar a mesma mídia em:
+/// - TMDB (catálogo, imagens, busca)
+/// - Trakt (tracking, histórico)
+/// - TheTVDB (metadados detalhados, season orders)
+/// - IMDB (referência universal)
 class MediaModel {
   const MediaModel({
     required this.id,
@@ -70,31 +38,49 @@ class MediaModel {
     required this.mediaType,
     required this.voteAverage,
     this.backdropPath = '',
-    this.ids,
     this.numberOfSeasons = 0,
     this.numberOfEpisodes = 0,
-    this.status = MediaStatus.unknown,
-    this.genres = const [],
+    this.status = '',
+    this.externalIds,
     this.seasons = const [],
-    this.originalLanguage = '',
-    this.popularity = 0.0,
   });
 
-  // --------------------------------------------------------------------------
-  // Factories
-  // --------------------------------------------------------------------------
-
-  /// Cria um [MediaModel] a partir de um resultado de busca do TMDB.
+  /// Cria um [MediaModel] a partir do JSON de busca do TMDB.
   ///
-  /// Compatível com `/search/multi`, `/search/tv` e `/search/movie`.
-  /// Para resultados de `/search/tv` e `/search/movie`, passe [forceType].
-  factory MediaModel.fromTmdbSearchJson(
-    Map<String, dynamic> json, {
-    MediaType? forceType,
-  }) {
-    final typeStr = json['media_type'] as String?;
-    final type = forceType ??
-        (typeStr == 'tv' ? MediaType.tv : MediaType.movie);
+  /// Compatível com `/search/tv`, `/search/movie` e `/search/multi`.
+  factory MediaModel.fromTmdbJson(Map<String, dynamic> json, {MediaType? forceType}) {
+    final type = forceType ?? (json['media_type'] == 'tv' ? MediaType.tv : MediaType.movie);
+    return MediaModel(
+      id: json['id'] as int,
+      title: (json['title'] ?? json['name'] ?? '') as String,
+      overview: (json['overview'] ?? '') as String,
+      posterPath: (json['poster_path'] ?? '') as String,
+      backdropPath: (json['backdrop_path'] ?? '') as String,
+      releaseDate:
+          (json['release_date'] ?? json['first_air_date'] ?? '') as String,
+      mediaType: type,
+      voteAverage: (json['vote_average'] as num?)?.toDouble() ?? 0.0,
+    );
+  }
+
+  /// Cria um [MediaModel] a partir do JSON de detalhes do TMDB.
+  ///
+  /// Compatível com `/tv/{id}` e `/movie/{id}` (com append_to_response).
+  factory MediaModel.fromTmdbDetailsJson(Map<String, dynamic> json, {required MediaType type}) {
+    // Extrair external_ids se disponível.
+    TraktIds? externalIds;
+    if (json.containsKey('external_ids')) {
+      externalIds = TraktIds.fromTmdbExternalIds(
+        json['external_ids'] as Map<String, dynamic>,
+        tmdbId: json['id'] as int,
+      );
+    }
+
+    // Extrair temporadas se disponível.
+    final seasons = (json['seasons'] as List<dynamic>?)
+            ?.map((s) => SeasonModel.fromTmdbJson(s as Map<String, dynamic>))
+            .toList() ??
+        const [];
 
     return MediaModel(
       id: json['id'] as int,
@@ -106,95 +92,28 @@ class MediaModel {
           (json['release_date'] ?? json['first_air_date'] ?? '') as String,
       mediaType: type,
       voteAverage: (json['vote_average'] as num?)?.toDouble() ?? 0.0,
-      originalLanguage: (json['original_language'] ?? '') as String,
-      popularity: (json['popularity'] as num?)?.toDouble() ?? 0.0,
-    );
-  }
-
-  /// Cria um [MediaModel] a partir dos detalhes completos do TMDB.
-  ///
-  /// Compatível com `/tv/{id}?append_to_response=external_ids`
-  /// e `/movie/{id}?append_to_response=external_ids`.
-  factory MediaModel.fromTmdbDetailsJson(
-    Map<String, dynamic> json,
-    MediaType mediaType,
-  ) {
-    // Extrai IDs externos se disponíveis (append_to_response=external_ids).
-    final externalIds =
-        json['external_ids'] as Map<String, dynamic>? ?? {};
-
-    final ids = TraktIds(
-      tmdb: json['id'] as int?,
-      imdb: (externalIds['imdb_id'] ?? externalIds['imdb']) as String?,
-      tvdb: externalIds['tvdb_id'] as int?,
-    );
-
-    // Extrai temporadas (séries).
-    final seasonsJson =
-        (json['seasons'] as List<dynamic>?) ?? [];
-    final seasons = seasonsJson
-        .cast<Map<String, dynamic>>()
-        .map(SeasonModel.fromTmdbJson)
-        .toList();
-
-    // Extrai gêneros.
-    final genresJson = (json['genres'] as List<dynamic>?) ?? [];
-    final genres = genresJson
-        .cast<Map<String, dynamic>>()
-        .map((g) => (g['name'] ?? '') as String)
-        .where((g) => g.isNotEmpty)
-        .toList();
-
-    return MediaModel(
-      id: json['id'] as int,
-      title: (json['title'] ?? json['name'] ?? '') as String,
-      overview: (json['overview'] ?? '') as String,
-      posterPath: (json['poster_path'] ?? '') as String,
-      backdropPath: (json['backdrop_path'] ?? '') as String,
-      releaseDate:
-          (json['release_date'] ?? json['first_air_date'] ?? '') as String,
-      mediaType: mediaType,
-      voteAverage: (json['vote_average'] as num?)?.toDouble() ?? 0.0,
-      ids: ids,
       numberOfSeasons: json['number_of_seasons'] as int? ?? 0,
       numberOfEpisodes: json['number_of_episodes'] as int? ?? 0,
-      status: _parseStatus(json['status'] as String?),
-      genres: genres,
+      status: (json['status'] ?? '') as String,
+      externalIds: externalIds,
       seasons: seasons,
-      originalLanguage: (json['original_language'] ?? '') as String,
-      popularity: (json['popularity'] as num?)?.toDouble() ?? 0.0,
     );
   }
 
-  /// Cria um [MediaModel] a partir do JSON do TheTVDB.
+  /// Cria um [MediaModel] a partir do JSON de busca do TheTVDB.
   factory MediaModel.fromTvdbJson(Map<String, dynamic> json) {
     return MediaModel(
-      id: json['id'] as int? ?? 0,
+      id: int.tryParse(json['tvdb_id']?.toString() ?? '') ?? 0,
       title: (json['name'] ?? '') as String,
       overview: (json['overview'] ?? '') as String,
-      posterPath: (json['image'] ?? '') as String,
-      releaseDate: (json['firstAired'] ?? '') as String,
-      mediaType: MediaType.tv,
-      voteAverage: (json['score'] as num?)?.toDouble() ?? 0.0,
-      ids: TraktIds(tvdb: json['id'] as int?),
-      status: _parseStatus(json['status']?['name'] as String?),
+      posterPath: (json['thumbnail'] ?? '') as String,
+      releaseDate: (json['year'] ?? '') as String,
+      mediaType: json['type'] == 'movie' ? MediaType.movie : MediaType.tv,
+      voteAverage: 0.0,
     );
   }
 
-  /// Cria um [MediaModel] com IDs Trakt mesclados.
-  ///
-  /// Usado após fazer cross-reference na API Trakt para adicionar
-  /// o `traktId` e `slug` ao modelo existente.
-  MediaModel withTraktIds(TraktIds traktIds) {
-    final merged = (ids ?? const TraktIds()).merge(traktIds);
-    return copyWith(ids: merged);
-  }
-
-  // --------------------------------------------------------------------------
-  // Campos básicos
-  // --------------------------------------------------------------------------
-
-  /// ID TMDB da mídia (chave principal).
+  /// ID da mídia na API primária (TMDB por padrão).
   final int id;
 
   /// Título da mídia.
@@ -203,10 +122,10 @@ class MediaModel {
   /// Sinopse / descrição.
   final String overview;
 
-  /// Caminho do poster (ex: "/abc123.jpg").
+  /// Caminho do poster (relativo ao TMDB image base URL).
   final String posterPath;
 
-  /// Caminho do backdrop/imagem de fundo.
+  /// Caminho do backdrop (relativo ao TMDB image base URL).
   final String backdropPath;
 
   /// Data de lançamento (formato ISO: "2024-01-01").
@@ -218,44 +137,35 @@ class MediaModel {
   /// Nota média dos usuários (0.0 a 10.0).
   final double voteAverage;
 
-  /// Idioma original da produção (ex: "en", "pt").
-  final String originalLanguage;
-
-  /// Score de popularidade TMDB.
-  final double popularity;
-
-  // --------------------------------------------------------------------------
-  // Campos de detalhe / cross-reference
-  // --------------------------------------------------------------------------
-
-  /// IDs nas diferentes APIs (Trakt, TMDB, TVDB, IMDb).
-  final TraktIds? ids;
-
-  /// Total de temporadas (séries de TV).
+  /// Número de temporadas (apenas para séries).
   final int numberOfSeasons;
 
-  /// Total de episódios (séries de TV).
+  /// Número total de episódios (apenas para séries).
   final int numberOfEpisodes;
 
-  /// Status de produção da série/filme.
-  final MediaStatus status;
+  /// Status da série (ex: "Returning Series", "Ended", "In Production").
+  final String status;
 
-  /// Lista de gêneros.
-  final List<String> genres;
+  /// IDs cruzados para outras APIs (Trakt, TheTVDB, IMDB).
+  final TraktIds? externalIds;
 
-  /// Lista de temporadas com metadados.
-  /// Preenchida após chamada a [getSeasonDetails].
+  /// Lista de temporadas (populada nos detalhes).
   final List<SeasonModel> seasons;
 
-  // --------------------------------------------------------------------------
-  // Getters computados
-  // --------------------------------------------------------------------------
-
   /// URL completa do poster na resolução w500.
-  String get fullPosterUrl => TmdbClient.posterUrl(posterPath);
+  String get fullPosterUrl {
+    if (posterPath.isEmpty) return '';
+    // TheTVDB retorna URL completa, TMDB retorna path relativo.
+    if (posterPath.startsWith('http')) return posterPath;
+    return 'https://image.tmdb.org/t/p/w500$posterPath';
+  }
 
-  /// URL completa do backdrop na resolução w1280.
-  String get fullBackdropUrl => TmdbClient.backdropUrl(backdropPath);
+  /// URL completa do backdrop.
+  String get fullBackdropUrl {
+    if (backdropPath.isEmpty) return '';
+    if (backdropPath.startsWith('http')) return backdropPath;
+    return 'https://image.tmdb.org/t/p/w780$backdropPath';
+  }
 
   /// Ano de lançamento extraído de [releaseDate].
   String get releaseYear {
@@ -263,49 +173,10 @@ class MediaModel {
     return releaseDate.substring(0, 4);
   }
 
-  /// Se o item é uma série de TV.
+  /// Se é uma série de TV.
   bool get isTvShow => mediaType == MediaType.tv;
 
-  /// Gêneros formatados como string (ex: "Drama, Thriller").
-  String get genresText => genres.join(', ');
-
-  /// Retorna true se os detalhes completos foram carregados
-  /// (tem IDs externos e temporadas).
-  bool get hasFullDetails => ids != null;
-
-  // --------------------------------------------------------------------------
-  // Helpers de status
-  // --------------------------------------------------------------------------
-
-  static MediaStatus _parseStatus(String? status) {
-    switch (status?.toLowerCase()) {
-      case 'returning series':
-      case 'continuing':
-        return MediaStatus.returning;
-      case 'ended':
-        return MediaStatus.ended;
-      case 'in production':
-        return MediaStatus.inProduction;
-      case 'canceled':
-      case 'cancelled':
-        return MediaStatus.canceled;
-      case 'pilot':
-        return MediaStatus.pilot;
-      default:
-        return MediaStatus.unknown;
-    }
-  }
-
-  // --------------------------------------------------------------------------
-  // Serialização (compatibilidade com código existente)
-  // --------------------------------------------------------------------------
-
-  /// Mantém compatibilidade com a factory original usada no mock.
-  factory MediaModel.fromJson(Map<String, dynamic> json) {
-    return MediaModel.fromTmdbSearchJson(json);
-  }
-
-  /// Converte o modelo para mapa JSON.
+  /// Converte o modelo para mapa JSON compatível com TMDB.
   Map<String, dynamic> toJson() {
     return {
       'id': id,
@@ -318,14 +189,12 @@ class MediaModel {
       'vote_average': voteAverage,
       'number_of_seasons': numberOfSeasons,
       'number_of_episodes': numberOfEpisodes,
+      'status': status,
+      if (externalIds != null) 'external_ids': externalIds!.toJson(),
     };
   }
 
-  // --------------------------------------------------------------------------
-  // copyWith
-  // --------------------------------------------------------------------------
-
-  /// Cria uma cópia com valores alterados.
+  /// Cria cópia com valores alterados.
   MediaModel copyWith({
     int? id,
     String? title,
@@ -335,13 +204,10 @@ class MediaModel {
     String? releaseDate,
     MediaType? mediaType,
     double? voteAverage,
-    String? originalLanguage,
-    double? popularity,
-    TraktIds? ids,
     int? numberOfSeasons,
     int? numberOfEpisodes,
-    MediaStatus? status,
-    List<String>? genres,
+    String? status,
+    TraktIds? externalIds,
     List<SeasonModel>? seasons,
   }) {
     return MediaModel(
@@ -353,13 +219,10 @@ class MediaModel {
       releaseDate: releaseDate ?? this.releaseDate,
       mediaType: mediaType ?? this.mediaType,
       voteAverage: voteAverage ?? this.voteAverage,
-      originalLanguage: originalLanguage ?? this.originalLanguage,
-      popularity: popularity ?? this.popularity,
-      ids: ids ?? this.ids,
       numberOfSeasons: numberOfSeasons ?? this.numberOfSeasons,
       numberOfEpisodes: numberOfEpisodes ?? this.numberOfEpisodes,
       status: status ?? this.status,
-      genres: genres ?? this.genres,
+      externalIds: externalIds ?? this.externalIds,
       seasons: seasons ?? this.seasons,
     );
   }
@@ -367,15 +230,12 @@ class MediaModel {
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
-    return other is MediaModel &&
-        other.id == id &&
-        other.mediaType == mediaType;
+    return other is MediaModel && other.id == id && other.mediaType == mediaType;
   }
 
   @override
   int get hashCode => id.hashCode ^ mediaType.hashCode;
 
   @override
-  String toString() =>
-      'MediaModel(id: $id, title: $title, type: $mediaType)';
+  String toString() => 'MediaModel(id: $id, title: $title, type: $mediaType)';
 }

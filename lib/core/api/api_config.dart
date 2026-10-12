@@ -1,101 +1,80 @@
+import 'package:safe_watch/core/config/env_config.dart';
+
 // ============================================================================
 // Safe Watch — API Configuration
 // ============================================================================
-// Constantes centralizadas de URLs base e configurações das 4 APIs.
-// As keys em si ficam em EnvConfig (injetadas via --dart-define).
+// Constantes de URLs base e configuração de cada API.
 // ============================================================================
 
-/// Constantes de configuração das 4 APIs integradas ao Safe Watch.
-///
-/// Centraliza URLs base, versões e parâmetros estáticos de cada API.
-/// As chaves de API são gerenciadas por [EnvConfig].
+/// Configuração centralizada de todas as APIs externas.
 abstract final class ApiConfig {
-  // --------------------------------------------------------------------------
-  // TMDB — The Movie Database
-  // Documentação: https://developer.themoviedb.org/docs
-  // --------------------------------------------------------------------------
+  // ── TMDB ──────────────────────────────────────────────────────────────────
 
-  /// URL base para todos os endpoints da API TMDB v3.
-  static const tmdbBaseUrl = 'https://api.themoviedb.org/3';
+  /// URL base da TMDB API v3.
+  static const String tmdbBaseUrl = 'https://api.themoviedb.org/3';
 
   /// URL base para imagens do TMDB.
-  /// Uso: '$tmdbImageBaseUrl/w500/caminho_do_poster.jpg'
-  static const tmdbImageBaseUrl = 'https://image.tmdb.org/t/p';
+  static const String tmdbImageBaseUrl = 'https://image.tmdb.org/t/p';
 
-  /// Tamanhos de imagem disponíveis no TMDB.
-  static const tmdbPosterW185 = 'w185';
-  static const tmdbPosterW342 = 'w342';
-  static const tmdbPosterW500 = 'w500';
-  static const tmdbPosterW780 = 'w780';
-  static const tmdbPosterOriginal = 'original';
-  static const tmdbBackdropW300 = 'w300';
-  static const tmdbBackdropW780 = 'w780';
-  static const tmdbBackdropW1280 = 'w1280';
-  static const tmdbStillW92 = 'w92';
-  static const tmdbStillW185 = 'w185';
-  static const tmdbStillW300 = 'w300';
+  /// API key do TMDB (Bearer token).
+  static String get tmdbApiKey => EnvConfig.tmdbApiKey;
 
-  /// Linguagem padrão para os resultados do TMDB.
-  static const tmdbDefaultLanguage = 'pt-BR';
+  /// Constrói URL completa de poster.
+  /// [path] é o posterPath retornado pela API (ex: "/abc123.jpg").
+  /// [size] é a resolução desejada (w92, w154, w185, w342, w500, w780, original).
+  static String tmdbImageUrl(String path, {String size = 'w500'}) {
+    if (path.isEmpty) return '';
+    return '$tmdbImageBaseUrl/$size$path';
+  }
 
-  /// Região padrão para resultados de streaming.
-  static const tmdbDefaultRegion = 'BR';
+  /// Constrói URL de backdrop.
+  static String tmdbBackdropUrl(String path, {String size = 'w780'}) {
+    if (path.isEmpty) return '';
+    return '$tmdbImageBaseUrl/$size$path';
+  }
 
-  // --------------------------------------------------------------------------
-  // Trakt.tv
-  // Documentação: https://trakt.docs.apiary.io/
-  // --------------------------------------------------------------------------
+  /// Constrói URL de still (episódio).
+  static String tmdbStillUrl(String path, {String size = 'w300'}) {
+    if (path.isEmpty) return '';
+    return '$tmdbImageBaseUrl/$size$path';
+  }
 
-  /// URL base para todos os endpoints da API Trakt.tv.
-  static const traktBaseUrl = 'https://api.trakt.tv';
+  // ── Trakt.tv ─────────────────────────────────────────────────────────────
 
-  /// Versão da API Trakt (enviada no header `trakt-api-version`).
-  static const traktApiVersion = '2';
+  /// URL base da Trakt.tv API.
+  static const String traktBaseUrl = 'https://api.trakt.tv';
 
-  /// URL de autorização OAuth 2.0 do Trakt.
-  static const traktAuthUrl = 'https://trakt.tv/oauth/authorize';
+  /// Versão da API do Trakt (header obrigatório).
+  static const String traktApiVersion = '2';
 
-  /// URL para troca de código por token OAuth.
-  static const traktTokenUrl = 'https://api.trakt.tv/oauth/token';
+  /// Client ID do Trakt (header trakt-api-key).
+  static String get traktClientId => EnvConfig.traktClientId;
 
-  /// URL para revogar token OAuth.
-  static const traktRevokeUrl = 'https://api.trakt.tv/oauth/revoke';
+  /// Client Secret do Trakt (OAuth token exchange).
+  static String get traktClientSecret => EnvConfig.traktClientSecret;
 
-  // --------------------------------------------------------------------------
-  // TheTVDB v4
-  // Documentação: https://thetvdb.github.io/v4-api/
-  // --------------------------------------------------------------------------
+  /// Redirect URI para OAuth do Trakt.
+  static String get traktRedirectUri => EnvConfig.traktRedirectUri;
 
-  /// URL base para todos os endpoints da API TheTVDB v4.
-  static const tvdbBaseUrl = 'https://api4.thetvdb.com/v4';
+  /// URL de autorização OAuth do Trakt.
+  static String get traktAuthUrl =>
+      'https://trakt.tv/oauth/authorize?response_type=code'
+      '&client_id=$traktClientId'
+      '&redirect_uri=${Uri.encodeComponent(traktRedirectUri)}';
 
-  /// Endpoint de login para obter JWT do TheTVDB.
-  static const tvdbLoginEndpoint = '/login';
+  // ── TheTVDB ──────────────────────────────────────────────────────────────
 
-  /// Validade do JWT do TheTVDB em dias (30 dias conforme documentação).
-  static const tvdbTokenValidityDays = 30;
+  /// URL base da TheTVDB API v4.
+  static const String tvdbBaseUrl = 'https://api4.thetvdb.com/v4';
 
-  // --------------------------------------------------------------------------
-  // Watchmode
-  // Documentação: https://api.watchmode.com/docs/
-  // --------------------------------------------------------------------------
+  /// API key do TheTVDB.
+  static String get tvdbApiKey => EnvConfig.tvdbApiKey;
 
-  /// URL base para todos os endpoints da API Watchmode.
-  static const watchmodeBaseUrl = 'https://api.watchmode.com/v1';
+  // ── Watchmode ────────────────────────────────────────────────────────────
 
-  // --------------------------------------------------------------------------
-  // Timeouts e configurações HTTP compartilhadas
-  // --------------------------------------------------------------------------
+  /// URL base da Watchmode API.
+  static const String watchmodeBaseUrl = 'https://api.watchmode.com/v1';
 
-  /// Timeout de conexão em segundos.
-  static const connectionTimeoutSeconds = 10;
-
-  /// Timeout de leitura/resposta em segundos.
-  static const receiveTimeoutSeconds = 15;
-
-  /// Máximo de tentativas de retry em caso de rate limit (429).
-  static const maxRetryAttempts = 3;
-
-  /// Delay base entre retries em milissegundos (cresce exponencialmente).
-  static const retryBaseDelayMs = 1000;
+  /// API key do Watchmode.
+  static String get watchmodeApiKey => EnvConfig.watchmodeApiKey;
 }

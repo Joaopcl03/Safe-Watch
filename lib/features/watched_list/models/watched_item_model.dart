@@ -123,6 +123,33 @@ class WatchedItemModel {
     return 'T$seasonProgress E$episodeProgress';
   }
 
+  /// Se a série já teve algum episódio assistido.
+  bool get hasStarted => seasonProgress > 0 || episodeProgress > 0;
+
+  /// Fração de progresso (0.0 a 1.0) usada na barra sob o pôster.
+  double get progressFraction {
+    if (isCompleted) return 1.0;
+    if (!isTvShow) return status == WatchedStatus.watched ? 1.0 : 0.0;
+    if (totalSeasons > 0) {
+      return (seasonProgress / totalSeasons).clamp(0.0, 1.0);
+    }
+    // Sem total conhecido: mostra progresso parcial se já começou.
+    return hasStarted ? 0.5 : 0.0;
+  }
+
+  /// Converte para um [MediaModel] básico (para navegar aos detalhes).
+  MediaModel toMedia() {
+    return MediaModel(
+      id: mediaId,
+      title: title,
+      overview: '',
+      posterPath: posterPath,
+      releaseDate: '',
+      mediaType: mediaType,
+      voteAverage: voteAverage,
+    );
+  }
+
   /// Cria uma cópia com valores alterados.
   WatchedItemModel copyWith({
     String? id,

@@ -1,66 +1,65 @@
 import 'package:dio/dio.dart';
 import 'package:safe_watch/core/api/api_config.dart';
 import 'package:safe_watch/core/api/api_interceptors.dart';
-import 'package:safe_watch/core/config/env_config.dart';
 
 // ============================================================================
-// Safe Watch — TMDB Client
+// Safe Watch — TMDB API Client
 // ============================================================================
 // Cliente Dio para The Movie Database (TMDB) API v3.
-// Documentação: https://developer.themoviedb.org/docs
+// Responsável por busca de catálogo, detalhes, temporadas e episódios.
 //
-// Responsabilidades:
-//   - Busca de séries e filmes
-//   - Detalhes de série com temporadas
-//   - Detalhes de episódios
-//   - Providers de streaming por região
-//   - Cross-reference de IDs externos (imdb, tvdb, trakt)
+// Autenticação: Bearer Token via header Authorization.
+// Base URL: https://api.themoviedb.org/3
+// Rate Limit: ~50 req/s (429 com Retry-After)
+// Docs: https://developer.themoviedb.org/docs
 // ============================================================================
 
-/// Cliente HTTP para a API TMDB v3.
+/// Cliente para a TMDB API v3.
 ///
-/// Singleton — use [TmdbClient.instance] para acesso.
-/// Configura automaticamente o Bearer token e os interceptors.
+/// Fornece métodos para busca, detalhes de séries/filmes,
+/// temporadas, episódios e providers de streaming.
+///
+/// Fluxo: SearchRepository → TmdbClient → TMDB API → JSON → Model
 class TmdbClient {
-  TmdbClient._() {
-    _dio = Dio(
+  TmdbClient() : _dio = _createDio();
+
+  final Dio _dio;
+
+  /// Cria instância configurada do Dio para TMDB.
+  static Dio _createDio() {
+    final dio = Dio(
       BaseOptions(
         baseUrl: ApiConfig.tmdbBaseUrl,
-        connectTimeout:
-            const Duration(seconds: ApiConfig.connectionTimeoutSeconds),
-        receiveTimeout:
-            const Duration(seconds: ApiConfig.receiveTimeoutSeconds),
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
         headers: {
-          // TMDB usa Bearer token no header Authorization.
-          'Authorization': 'Bearer ${EnvConfig.tmdbApiKey}',
           'Accept': 'application/json',
+          'Authorization': 'Bearer ${ApiConfig.tmdbApiKey}',
         },
       ),
     );
 
-    _dio.interceptors.addAll([
+    dio.interceptors.addAll([
       RateLimitInterceptor(),
-      const LoggingInterceptor(),
-      CacheInterceptor(maxAge: const Duration(minutes: 30)),
+      LoggingInterceptor(),
     ]);
+
+    return dio;
   }
 
-  static final TmdbClient instance = TmdbClient._();
+  // ── Busca ────────────────────────────────────────────────────────────────
 
-  late final Dio _dio;
-
-  // --------------------------------------------------------------------------
-  // Busca
-  // --------------------------------------------------------------------------
-
-  /// Busca séries de TV pelo título.
+  /// Busca séries de TV por título.
   ///
-  /// Endpoint: GET /search/tv
-  /// Retorna lista de resultados da busca com paginação.
+  /// [query]: termo de busca.
+  /// [page]: página de resultados (padrão: 1).
+  /// [language]: idioma dos resultados (padrão: pt-BR).
+  ///
+  /// Retorna mapa JSON com `results`, `page`, `total_pages`, `total_results`.
   Future<Map<String, dynamic>> searchTv(
     String query, {
     int page = 1,
-    String language = ApiConfig.tmdbDefaultLanguage,
+    String language = 'pt-BR',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/search/tv',
@@ -68,18 +67,17 @@ class TmdbClient {
         'query': query,
         'page': page,
         'language': language,
+        'include_adult': false,
       },
     );
     return response.data!;
   }
 
-  /// Busca filmes pelo título.
-  ///
-  /// Endpoint: GET /search/movie
+  /// Busca filmes por título.
   Future<Map<String, dynamic>> searchMovie(
     String query, {
     int page = 1,
-    String language = ApiConfig.tmdbDefaultLanguage,
+    String language = 'pt-BR',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/search/movie',
@@ -87,19 +85,17 @@ class TmdbClient {
         'query': query,
         'page': page,
         'language': language,
+        'include_adult': false,
       },
     );
     return response.data!;
   }
 
-  /// Busca séries e filmes simultaneamente (multi-search).
-  ///
-  /// Endpoint: GET /search/multi
-  /// Retorna mix de filmes, séries e pessoas.
+  /// Busca multi (séries + filmes + pessoas).
   Future<Map<String, dynamic>> searchMulti(
     String query, {
     int page = 1,
-    String language = ApiConfig.tmdbDefaultLanguage,
+    String language = 'pt-BR',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/search/multi',
@@ -107,180 +103,177 @@ class TmdbClient {
         'query': query,
         'page': page,
         'language': language,
+        'include_adult': false,
       },
     );
     return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Detalhes de Série
-  // --------------------------------------------------------------------------
+  // ── Detalhes ─────────────────────────────────────────────────────────────
 
   /// Retorna detalhes completos de uma série de TV.
   ///
-  /// Endpoint: GET /tv/{series_id}
-  /// [appendToResponse] permite incluir dados extras em uma única chamada.
-  /// Exemplo: `appendToResponse: 'external_ids,credits,videos'`
+  /// [seriesId]: ID da série no TMDB.
+  /// [appendToResponse]: dados adicionais (ex: 'external_ids,aggregate_credits,content_ratings').
   Future<Map<String, dynamic>> getTvDetails(
     int seriesId, {
-    String language = ApiConfig.tmdbDefaultLanguage,
-    String appendToResponse = 'external_ids',
+    String? appendToResponse,
+    String language = 'pt-BR',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/tv/$seriesId',
       queryParameters: {
         'language': language,
-        'append_to_response': appendToResponse,
+        if (appendToResponse != null) 'append_to_response': appendToResponse,
       },
     );
     return response.data!;
   }
 
-  /// Retorna detalhes de uma temporada específica com todos os episódios.
-  ///
-  /// Endpoint: GET /tv/{series_id}/season/{season_number}
-  Future<Map<String, dynamic>> getSeasonDetails(
-    int seriesId,
-    int seasonNumber, {
-    String language = ApiConfig.tmdbDefaultLanguage,
-  }) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/tv/$seriesId/season/$seasonNumber',
-      queryParameters: {'language': language},
-    );
-    return response.data!;
-  }
-
-  /// Retorna detalhes de um episódio específico.
-  ///
-  /// Endpoint: GET /tv/{series_id}/season/{season_number}/episode/{episode_number}
-  Future<Map<String, dynamic>> getEpisodeDetails(
-    int seriesId,
-    int seasonNumber,
-    int episodeNumber, {
-    String language = ApiConfig.tmdbDefaultLanguage,
-  }) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/tv/$seriesId/season/$seasonNumber/episode/$episodeNumber',
-      queryParameters: {'language': language},
-    );
-    return response.data!;
-  }
-
-  // --------------------------------------------------------------------------
-  // Detalhes de Filme
-  // --------------------------------------------------------------------------
-
-  /// Retorna detalhes completos de um filme.
-  ///
-  /// Endpoint: GET /movie/{movie_id}
+  /// Retorna detalhes de um filme.
   Future<Map<String, dynamic>> getMovieDetails(
     int movieId, {
-    String language = ApiConfig.tmdbDefaultLanguage,
-    String appendToResponse = 'external_ids',
+    String? appendToResponse,
+    String language = 'pt-BR',
   }) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/movie/$movieId',
       queryParameters: {
         'language': language,
-        'append_to_response': appendToResponse,
+        if (appendToResponse != null) 'append_to_response': appendToResponse,
       },
     );
     return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // IDs Externos
-  // --------------------------------------------------------------------------
+  // ── Temporadas e Episódios ───────────────────────────────────────────────
 
-  /// Retorna os IDs externos de uma série (imdb, tvdb, trakt, etc.).
+  /// Retorna detalhes de uma temporada específica, incluindo lista de episódios.
   ///
-  /// Endpoint: GET /tv/{series_id}/external_ids
-  Future<Map<String, dynamic>> getTvExternalIds(int seriesId) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/tv/$seriesId/external_ids',
-    );
-    return response.data!;
-  }
-
-  /// Retorna os IDs externos de um filme.
-  ///
-  /// Endpoint: GET /movie/{movie_id}/external_ids
-  Future<Map<String, dynamic>> getMovieExternalIds(int movieId) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/movie/$movieId/external_ids',
-    );
-    return response.data!;
-  }
-
-  // --------------------------------------------------------------------------
-  // Streaming / Watch Providers
-  // --------------------------------------------------------------------------
-
-  /// Retorna os providers de streaming disponíveis para uma série por região.
-  ///
-  /// Endpoint: GET /tv/{series_id}/watch/providers
-  /// Retorna dados do JustWatch por país.
-  Future<Map<String, dynamic>> getTvWatchProviders(
-    int seriesId, {
-    String region = ApiConfig.tmdbDefaultRegion,
+  /// [seriesId]: ID da série no TMDB.
+  /// [seasonNumber]: número da temporada.
+  Future<Map<String, dynamic>> getSeasonDetails(
+    int seriesId,
+    int seasonNumber, {
+    String language = 'pt-BR',
   }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/tv/$seriesId/season/$seasonNumber',
+      queryParameters: {
+        'language': language,
+      },
+    );
+    return response.data!;
+  }
+
+  /// Retorna detalhes de um episódio específico.
+  Future<Map<String, dynamic>> getEpisodeDetails(
+    int seriesId,
+    int seasonNumber,
+    int episodeNumber, {
+    String language = 'pt-BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/tv/$seriesId/season/$seasonNumber/episode/$episodeNumber',
+      queryParameters: {
+        'language': language,
+      },
+    );
+    return response.data!;
+  }
+
+  // ── Streaming Providers ──────────────────────────────────────────────────
+
+  /// Retorna providers de streaming para uma série.
+  ///
+  /// Usa a integração nativa com JustWatch do TMDB.
+  Future<Map<String, dynamic>> getTvWatchProviders(int seriesId) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/tv/$seriesId/watch/providers',
-      options: Options(extra: {'useCache': true}),
     );
-    // Filtra pelo país/região desejada.
-    final results =
-        (response.data!['results'] as Map<String, dynamic>?) ?? {};
-    return results[region] as Map<String, dynamic>? ?? {};
+    return response.data!;
   }
 
-  /// Retorna os providers de streaming disponíveis para um filme por região.
-  ///
-  /// Endpoint: GET /movie/{movie_id}/watch/providers
-  Future<Map<String, dynamic>> getMovieWatchProviders(
-    int movieId, {
-    String region = ApiConfig.tmdbDefaultRegion,
-  }) async {
+  /// Retorna providers de streaming para um filme.
+  Future<Map<String, dynamic>> getMovieWatchProviders(int movieId) async {
     final response = await _dio.get<Map<String, dynamic>>(
       '/movie/$movieId/watch/providers',
-      options: Options(extra: {'useCache': true}),
     );
-    final results =
-        (response.data!['results'] as Map<String, dynamic>?) ?? {};
-    return results[region] as Map<String, dynamic>? ?? {};
+    return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Helpers de URL de Imagem
-  // --------------------------------------------------------------------------
+  // ── Trending ─────────────────────────────────────────────────────────────
 
-  /// Gera a URL completa de um poster a partir do caminho parcial.
+  /// Retorna séries em tendência.
   ///
-  /// [size] pode ser: w185, w342, w500, w780, original.
-  static String posterUrl(
-    String? path, {
-    String size = ApiConfig.tmdbPosterW500,
-  }) {
-    if (path == null || path.isEmpty) return '';
-    return '${ApiConfig.tmdbImageBaseUrl}/$size$path';
+  /// [timeWindow]: 'day' ou 'week'.
+  Future<Map<String, dynamic>> getTrendingTv({
+    String timeWindow = 'week',
+    String language = 'pt-BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/trending/tv/$timeWindow',
+      queryParameters: {'language': language},
+    );
+    return response.data!;
   }
 
-  /// Gera a URL completa de um backdrop (imagem de fundo).
-  static String backdropUrl(
-    String? path, {
-    String size = ApiConfig.tmdbBackdropW1280,
-  }) {
-    if (path == null || path.isEmpty) return '';
-    return '${ApiConfig.tmdbImageBaseUrl}/$size$path';
+  /// Retorna mídias em tendência de um tipo específico.
+  ///
+  /// [mediaType]: 'all', 'tv' ou 'movie'.
+  /// [timeWindow]: 'day' ou 'week'.
+  Future<Map<String, dynamic>> getTrending({
+    String mediaType = 'all',
+    String timeWindow = 'week',
+    int page = 1,
+    String language = 'pt-BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/trending/$mediaType/$timeWindow',
+      queryParameters: {'language': language, 'page': page},
+    );
+    return response.data!;
   }
 
-  /// Gera a URL completa de um still (frame de episódio).
-  static String stillUrl(
-    String? path, {
-    String size = ApiConfig.tmdbStillW300,
-  }) {
-    if (path == null || path.isEmpty) return '';
-    return '${ApiConfig.tmdbImageBaseUrl}/$size$path';
+  // ── Listas (Em breve / Populares) ────────────────────────────────────────
+
+  /// Retorna filmes que serão lançados em breve.
+  Future<Map<String, dynamic>> getUpcomingMovies({
+    int page = 1,
+    String language = 'pt-BR',
+    String region = 'BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/movie/upcoming',
+      queryParameters: {'language': language, 'page': page, 'region': region},
+    );
+    return response.data!;
+  }
+
+  /// Retorna séries com episódios indo ao ar nos próximos 7 dias.
+  Future<Map<String, dynamic>> getOnTheAirTv({
+    int page = 1,
+    String language = 'pt-BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/tv/on_the_air',
+      queryParameters: {'language': language, 'page': page},
+    );
+    return response.data!;
+  }
+
+  /// Retorna mídias populares.
+  ///
+  /// [mediaType]: 'tv' ou 'movie'.
+  Future<Map<String, dynamic>> getPopular({
+    required String mediaType,
+    int page = 1,
+    String language = 'pt-BR',
+  }) async {
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/$mediaType/popular',
+      queryParameters: {'language': language, 'page': page},
+    );
+    return response.data!;
   }
 }

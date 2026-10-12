@@ -1,162 +1,155 @@
 import 'package:dio/dio.dart';
 import 'package:safe_watch/core/api/api_config.dart';
 import 'package:safe_watch/core/api/api_interceptors.dart';
-import 'package:safe_watch/core/config/env_config.dart';
 
 // ============================================================================
-// Safe Watch — Trakt.tv Client
+// Safe Watch — Trakt.tv API Client
 // ============================================================================
 // Cliente Dio para Trakt.tv API v2.
-// Documentação: https://trakt.docs.apiary.io/
+// Responsável por tracking de usuário: histórico, watchlist, check-in.
 //
-// Responsabilidades:
-//   - Sync de histórico (marcar como assistido)
-//   - Watchlist (quero assistir)
-//   - Check-in ("assistindo agora")
-//   - Progresso por série
-//   - OAuth token exchange (via TraktAuthService)
+// Autenticação: OAuth 2.0 (Bearer token) + Client ID header.
+// Base URL: https://api.trakt.tv
+// Headers obrigatórios: trakt-api-version, trakt-api-key, Authorization
+// Rate Limit: GET 1000/5min, POST/PUT/DELETE 1/s
+// Docs: https://trakt.docs.apiary.io/
 // ============================================================================
 
-/// Cliente HTTP para a API Trakt.tv v2.
+/// Cliente para a Trakt.tv API v2.
 ///
-/// Requer que [accessToken] seja definido após o fluxo OAuth.
-/// Use [TraktAuthService] para obter e persistir o token.
+/// Gerencia tracking de episódios, watchlist, check-in e progresso.
+/// Requer autenticação OAuth 2.0 para endpoints de usuário.
 ///
-/// Singleton — use [TraktClient.instance].
+/// Fluxo: WatchedListRepository → TraktClient → Trakt API → JSON
 class TraktClient {
-  TraktClient._() {
-    _dio = Dio(
+  TraktClient({String? accessToken})
+      : _accessToken = accessToken,
+        _dio = _createDio(accessToken);
+
+  String? _accessToken;
+  Dio _dio;
+
+  /// Atualiza o access token (após login ou refresh).
+  void updateAccessToken(String token) {
+    _accessToken = token;
+    _dio = _createDio(token);
+  }
+
+  /// Se o cliente tem um token de autenticação válido.
+  bool get isAuthenticated => _accessToken != null && _accessToken!.isNotEmpty;
+
+  /// Cria instância configurada do Dio para Trakt.
+  static Dio _createDio(String? accessToken) {
+    final dio = Dio(
       BaseOptions(
         baseUrl: ApiConfig.traktBaseUrl,
-        connectTimeout:
-            const Duration(seconds: ApiConfig.connectionTimeoutSeconds),
-        receiveTimeout:
-            const Duration(seconds: ApiConfig.receiveTimeoutSeconds),
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 15),
         headers: {
-          // Headers obrigatórios para todas as requisições Trakt.
-          'trakt-api-version': ApiConfig.traktApiVersion,
-          'trakt-api-key': EnvConfig.traktClientId,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
+          'trakt-api-version': ApiConfig.traktApiVersion,
+          'trakt-api-key': ApiConfig.traktClientId,
+          if (accessToken != null && accessToken.isNotEmpty)
+            'Authorization': 'Bearer $accessToken',
         },
       ),
     );
 
-    _dio.interceptors.addAll([
-      _AuthInterceptor(this),
+    dio.interceptors.addAll([
       RateLimitInterceptor(),
-      const LoggingInterceptor(),
+      LoggingInterceptor(),
     ]);
+
+    return dio;
   }
 
-  static final TraktClient instance = TraktClient._();
+  // ── OAuth ────────────────────────────────────────────────────────────────
 
-  late final Dio _dio;
-
-  /// Access token OAuth 2.0 atual.
-  /// Deve ser setado por [TraktAuthService] após autenticação.
-  String? accessToken;
-
-  // --------------------------------------------------------------------------
-  // OAuth — Token Exchange
-  // --------------------------------------------------------------------------
-
-  /// Troca o código de autorização OAuth por access + refresh token.
+  /// Troca o código de autorização por access token.
   ///
-  /// Endpoint: POST /oauth/token
-  Future<Map<String, dynamic>> exchangeCode({
-    required String code,
-    required String redirectUri,
-  }) async {
+  /// [code]: código recebido após o usuário autorizar no browser.
+  /// Retorna mapa com access_token, refresh_token, expires_in, etc.
+  Future<Map<String, dynamic>> exchangeCodeForToken(String code) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/oauth/token',
       data: {
         'code': code,
-        'client_id': EnvConfig.traktClientId,
-        'client_secret': EnvConfig.traktClientSecret,
-        'redirect_uri': redirectUri,
+        'client_id': ApiConfig.traktClientId,
+        'client_secret': ApiConfig.traktClientSecret,
+        'redirect_uri': ApiConfig.traktRedirectUri,
         'grant_type': 'authorization_code',
       },
-      // Não usa o AuthInterceptor aqui pois ainda não há token.
-      options: Options(extra: {'skipAuth': true}),
     );
     return response.data!;
   }
 
-  /// Atualiza o access token usando o refresh token.
+  /// Renova o access token usando o refresh token.
   ///
-  /// Endpoint: POST /oauth/token (com grant_type refresh_token)
-  Future<Map<String, dynamic>> refreshToken({
-    required String refreshToken,
-    required String redirectUri,
-  }) async {
+  /// [refreshToken]: refresh token atual (single-use, rotativo).
+  /// Retorna novo par access_token + refresh_token.
+  Future<Map<String, dynamic>> refreshAccessToken(String refreshToken) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/oauth/token',
       data: {
         'refresh_token': refreshToken,
-        'client_id': EnvConfig.traktClientId,
-        'client_secret': EnvConfig.traktClientSecret,
-        'redirect_uri': redirectUri,
+        'client_id': ApiConfig.traktClientId,
+        'client_secret': ApiConfig.traktClientSecret,
+        'redirect_uri': ApiConfig.traktRedirectUri,
         'grant_type': 'refresh_token',
       },
-      options: Options(extra: {'skipAuth': true}),
     );
     return response.data!;
   }
 
-  /// Revoga o access token (logout do Trakt).
-  ///
-  /// Endpoint: POST /oauth/revoke
+  /// Revoga o access token (logout).
   Future<void> revokeToken(String token) async {
     await _dio.post<void>(
       '/oauth/revoke',
       data: {
         'token': token,
-        'client_id': EnvConfig.traktClientId,
-        'client_secret': EnvConfig.traktClientSecret,
+        'client_id': ApiConfig.traktClientId,
+        'client_secret': ApiConfig.traktClientSecret,
       },
-      options: Options(extra: {'skipAuth': true}),
     );
   }
 
-  // --------------------------------------------------------------------------
-  // Histórico (Watched)
-  // --------------------------------------------------------------------------
+  // ── Sync History (Marcar como assistido) ─────────────────────────────────
 
-  /// Adiciona episódios/filmes ao histórico do usuário.
+  /// Marca itens como assistidos no histórico.
   ///
-  /// Endpoint: POST /sync/history
-  /// [body] deve seguir o schema Trakt:
+  /// Aceita shows, seasons e episodes com IDs cruzados (tmdb, tvdb, imdb).
+  /// [data] segue o formato:
   /// ```json
-  /// { "episodes": [{ "ids": { "trakt": 123 }, "watched_at": "2024-01-01T00:00:00.000Z" }] }
+  /// {
+  ///   "shows": [{"ids": {"tmdb": 1396}, "seasons": [{"number": 1, "episodes": [...]}]}],
+  ///   "episodes": [{"ids": {"tmdb": 62085}, "watched_at": "2024-01-01T00:00:00.000Z"}]
+  /// }
   /// ```
-  Future<Map<String, dynamic>> addToHistory(
-    Map<String, dynamic> body,
-  ) async {
+  Future<Map<String, dynamic>> syncHistory(Map<String, dynamic> data) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/sync/history',
-      data: body,
+      data: data,
     );
     return response.data!;
   }
 
-  /// Remove episódios/filmes do histórico do usuário.
-  ///
-  /// Endpoint: POST /sync/history/remove
+  /// Remove itens do histórico de assistidos.
   Future<Map<String, dynamic>> removeFromHistory(
-    Map<String, dynamic> body,
+    Map<String, dynamic> data,
   ) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/sync/history/remove',
-      data: body,
+      data: data,
     );
     return response.data!;
   }
 
   /// Retorna o histórico de assistidos do usuário.
   ///
-  /// Endpoint: GET /sync/history/{type}
-  /// [type] pode ser: 'movies', 'shows', 'seasons', 'episodes'
+  /// [type]: 'shows', 'seasons', 'episodes'.
+  /// [page]: página (padrão: 1).
+  /// [limit]: itens por página (padrão: 20).
   Future<List<dynamic>> getHistory({
     String type = 'episodes',
     int page = 1,
@@ -167,136 +160,109 @@ class TraktClient {
       queryParameters: {
         'page': page,
         'limit': limit,
-        'extended': 'full',
       },
     );
     return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Watchlist (Quero Assistir)
-  // --------------------------------------------------------------------------
+  // ── Watchlist ────────────────────────────────────────────────────────────
 
-  /// Adiciona séries/filmes à watchlist do usuário.
-  ///
-  /// Endpoint: POST /sync/watchlist
+  /// Adiciona itens à watchlist (quero assistir).
   Future<Map<String, dynamic>> addToWatchlist(
-    Map<String, dynamic> body,
+    Map<String, dynamic> data,
   ) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/sync/watchlist',
-      data: body,
+      data: data,
     );
     return response.data!;
   }
 
-  /// Remove séries/filmes da watchlist do usuário.
-  ///
-  /// Endpoint: POST /sync/watchlist/remove
+  /// Remove itens da watchlist.
   Future<Map<String, dynamic>> removeFromWatchlist(
-    Map<String, dynamic> body,
+    Map<String, dynamic> data,
   ) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/sync/watchlist/remove',
-      data: body,
+      data: data,
     );
     return response.data!;
   }
 
   /// Retorna a watchlist do usuário.
   ///
-  /// Endpoint: GET /sync/watchlist/{type}
+  /// [type]: 'shows', 'movies' ou 'episodes'.
+  /// [sort]: 'rank', 'added', 'title', 'released'.
   Future<List<dynamic>> getWatchlist({
     String type = 'shows',
     String sort = 'added',
+    int page = 1,
+    int limit = 50,
   }) async {
     final response = await _dio.get<List<dynamic>>(
       '/sync/watchlist/$type/$sort',
-      queryParameters: {'extended': 'full'},
+      queryParameters: {
+        'page': page,
+        'limit': limit,
+      },
     );
     return response.data!;
   }
 
-  // --------------------------------------------------------------------------
-  // Check-in ("assistindo agora")
-  // --------------------------------------------------------------------------
+  // ── Check-in ────────────────────────────────────────────────────────────
 
-  /// Faz check-in em um episódio (marca como "assistindo agora").
+  /// Realiza check-in ("assistindo agora").
   ///
-  /// Endpoint: POST /checkin
-  /// Automaticamente expira após o runtime do episódio.
-  Future<Map<String, dynamic>> checkin(Map<String, dynamic> body) async {
+  /// Só é possível ter um check-in ativo por vez.
+  /// Retorna 409 Conflict se já houver um check-in ativo.
+  Future<Map<String, dynamic>> checkin(Map<String, dynamic> data) async {
     final response = await _dio.post<Map<String, dynamic>>(
       '/checkin',
-      data: body,
+      data: data,
     );
     return response.data!;
   }
 
   /// Cancela o check-in ativo.
-  ///
-  /// Endpoint: DELETE /checkin
   Future<void> cancelCheckin() async {
     await _dio.delete<void>('/checkin');
   }
 
-  // --------------------------------------------------------------------------
-  // Progresso de Série
-  // --------------------------------------------------------------------------
+  // ── Progresso ────────────────────────────────────────────────────────────
 
-  /// Retorna o progresso de assistido de uma série para o usuário.
+  /// Retorna progresso de uma série (episódios assistidos vs total).
   ///
-  /// Endpoint: GET /shows/{id}/progress/watched
-  /// [id] é o slug ou ID Trakt da série.
-  Future<Map<String, dynamic>> getShowProgress(String id) async {
-    final response = await _dio.get<Map<String, dynamic>>(
-      '/shows/$id/progress/watched',
-      queryParameters: {'hidden': false, 'specials': false},
-    );
-    return response.data!;
-  }
-
-  // --------------------------------------------------------------------------
-  // IDs / Busca
-  // --------------------------------------------------------------------------
-
-  /// Busca uma série/filme pelo ID TMDB para obter os IDs Trakt.
-  ///
-  /// Endpoint: GET /search/{id_type}/{id}
-  /// [idType] pode ser: 'tmdb', 'imdb', 'tvdb'
-  Future<List<dynamic>> searchByExternalId({
-    required String idType,
-    required String id,
-    String? type,
+  /// [showId]: ID ou slug da série no Trakt.
+  Future<Map<String, dynamic>> getShowProgress(
+    String showId, {
+    bool hidden = false,
+    bool specials = false,
   }) async {
-    final response = await _dio.get<List<dynamic>>(
-      '/search/$idType/$id',
+    final response = await _dio.get<Map<String, dynamic>>(
+      '/shows/$showId/progress/watched',
       queryParameters: {
-        if (type != null) 'type': type,
+        'hidden': hidden,
+        'specials': specials,
       },
     );
     return response.data!;
   }
-}
 
-// ----------------------------------------------------------------------------
-// Auth Interceptor interno
-// ----------------------------------------------------------------------------
+  // ── Search ──────────────────────────────────────────────────────────────
 
-/// Interceptor que injeta o Authorization header nas requisições autenticadas.
-class _AuthInterceptor extends Interceptor {
-  const _AuthInterceptor(this._client);
-
-  final TraktClient _client;
-
-  @override
-  void onRequest(RequestOptions options, RequestInterceptorHandler handler) {
-    final skipAuth = options.extra['skipAuth'] as bool? ?? false;
-
-    if (!skipAuth && _client.accessToken != null) {
-      options.headers['Authorization'] = 'Bearer ${_client.accessToken}';
-    }
-
-    handler.next(options);
+  /// Busca no Trakt por ID externo (TMDB, TVDB, IMDB).
+  ///
+  /// [idType]: 'tmdb', 'tvdb', 'imdb'.
+  /// [type]: 'show', 'movie', 'episode'.
+  Future<List<dynamic>> searchByExternalId(
+    String id, {
+    String idType = 'tmdb',
+    String type = 'show',
+  }) async {
+    final response = await _dio.get<List<dynamic>>(
+      '/search/$idType/$id',
+      queryParameters: {'type': type},
+    );
+    return response.data!;
   }
 }
